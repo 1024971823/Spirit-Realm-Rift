@@ -1,0 +1,6 @@
+{
+  "name": "Prism Breach",
+  "description": "Competitive multiplayer first-person laser tag arena with destructible cover, environmental hazards, customizable loadouts, voice chat, and skill-based matchmaking.",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
