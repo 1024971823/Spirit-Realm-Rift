@@ -20,12 +20,12 @@ import {
   MAP_I18N,
   ROBOT_CLASS_I18N,
   translateControlOwner,
-  translateDynamicLabel,
   translateOreLabel,
   translateTeamName,
   VOICE_CHANNEL_LABELS,
   WEAPON_I18N,
 } from '../i18n/translations';
+import { KillFeed } from './KillFeed';
 import type { ChatMessage } from '../net/clientSocket';
 import { AMMO_PACKS, canRobotClassFire, GADGETS, MAPS, ROBOT_CLASSES, WEAPONS } from '../shared/catalog';
 import type {
@@ -399,22 +399,12 @@ export const GameHud: React.FC<GameHudProps> = ({
           </button>
         </div>
 
-        <div className="flex flex-col items-end gap-1 mt-1">
-          {snapshot?.killFeed.slice(-4).map((kf) => (
-            <div
-              key={kf.id}
-              className="px-2.5 py-1 bg-[#0B1019]/88 border border-white/10 text-[11px] font-mono-tabular flex items-center gap-1.5"
-            >
-              <span className={kf.attackerTeam === 'cobalt' ? 'text-cyan-400' : kf.attackerTeam === 'amber' ? 'text-amber-400' : 'text-red-400'}>
-                {translateDynamicLabel(kf.attackerName, lang)}
-              </span>
-              <span className="text-slate-500">[{translateDynamicLabel(kf.weaponOrHazard, lang)}]</span>
-              <span className={kf.victimTeam === 'cobalt' ? 'text-cyan-300' : 'text-amber-300'}>
-                {kf.victimName}
-              </span>
-            </div>
-          ))}
-        </div>
+        <KillFeed
+          key={snapshot?.roomId ?? 'arena'}
+          events={snapshot?.killFeed ?? []}
+          localPlayerId={localPlayerId}
+          localCallsign={me?.callsign}
+        />
       </div>
 
       {/* CENTER: Precision SVG Crosshair & Hitmarker */}

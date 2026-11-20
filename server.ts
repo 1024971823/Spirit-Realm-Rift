@@ -585,7 +585,7 @@ function serializeRoomSnapshot(room: ServerRoom): MatchSnapshot {
     barriers: Array.from(room.barriers.values()),
     hazards: room.hazards,
     oreNodes: Array.from(room.oreNodes.values()),
-    killFeed: room.killFeed.slice(-5),
+    killFeed: room.killFeed.slice(-8),
     antiCheat: room.antiCheat,
   };
 }
@@ -651,8 +651,10 @@ function applyDamage(
 
     const event: KillFeedEvent = {
       id: `kf_${now}_${Math.random().toString(36).slice(2, 6)}`,
+      attackerId: attacker ? attacker.id : null,
       attackerName: attacker ? attacker.callsign : weaponOrHazardLabel,
       attackerTeam: attacker ? attacker.team : 'hazard',
+      victimId: victim.id,
       victimName: victim.callsign,
       victimTeam: victim.team,
       weaponOrHazard: weaponOrHazardLabel,

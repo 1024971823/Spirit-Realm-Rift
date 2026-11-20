@@ -362,8 +362,10 @@ export interface CombatantSnapshot {
 
 export interface KillFeedEvent {
   id: string;
+  attackerId?: string | null;
   attackerName: string;
   attackerTeam: TeamId | 'hazard';
+  victimId?: string;
   victimName: string;
   victimTeam: TeamId;
   weaponOrHazard: string;

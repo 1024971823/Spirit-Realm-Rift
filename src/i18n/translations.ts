@@ -470,6 +470,10 @@ export const UI_TEXT = {
     antiCheatVerified: '已验证',
     antiCheatActive: '运行中',
     padActive: '手柄已激活',
+    killFeedAria: '实时击杀与阵亡播报',
+    killFeedElimTag: '击杀',
+    killFeedDownTag: '阵亡',
+    killFeedHazardTag: '环境',
     // PauseModal
     matchPaused: '比赛已暂停',
     pauseDesc: '服务器上的机甲大师竞技场仍在实时运行中。',
@@ -688,6 +692,10 @@ export const UI_TEXT = {
     antiCheatVerified: 'Verified',
     antiCheatActive: 'Active',
     padActive: 'Pad Active',
+    killFeedAria: 'Live elimination and death feed',
+    killFeedElimTag: 'ELIM',
+    killFeedDownTag: 'DOWN',
+    killFeedHazardTag: 'HAZARD',
     // PauseModal
     matchPaused: 'Match Paused',
     pauseDesc: 'Arena simulation remains live for active RoboMaster units on the server.',
