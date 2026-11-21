@@ -1,4 +1,6 @@
 import * as THREE from 'three';
+import { ColladaLoader } from 'three/addons/loaders/ColladaLoader.js';
+import { STLLoader } from 'three/addons/loaders/STLLoader.js';
 import URDFLoader, { type URDFRobot } from 'urdf-loader';
 import { ROBOT_HITBOX_SPECS } from '../shared/physics';
 import type { RobotClass, TeamId } from '../shared/types';
@@ -67,6 +69,59 @@ export function getRoboMasterTemplate(robotClass: RobotClass = 's1_striker'): Pr
     const loader = new URDFLoader(manager);
     loader.packages = {
       robomaster_description: '/models/robomaster',
+    };
+    loader.loadMeshCb = (meshPath, meshManager, material, onComplete) => {
+      if (/\.dae$/i.test(meshPath)) {
+        const fileLoader = new THREE.FileLoader(meshManager);
+        fileLoader.load(
+          meshPath,
+          (raw) => {
+            try {
+              const xmlText =
+                typeof raw === 'string'
+                  ? raw
+                  : new TextDecoder().decode(raw as ArrayBuffer);
+              const isZUp = /<up_axis>\s*Z_UP\s*<\/up_axis>/i.test(xmlText);
+              const normalizedXml = isZUp
+                ? xmlText.replace(/<up_axis>\s*Z_UP\s*<\/up_axis>/i, '<up_axis>Y_UP</up_axis>')
+                : xmlText;
+              const colladaLoader = new ColladaLoader(meshManager);
+              const dae = colladaLoader.parse(
+                normalizedXml,
+                THREE.LoaderUtils.extractUrlBase(meshPath),
+              );
+              if (!dae?.scene) {
+                onComplete(null as unknown as THREE.Object3D, new Error(`Failed to parse Collada mesh: ${meshPath}`));
+                return;
+              }
+              if (isZUp) {
+                dae.scene.rotation.set(-Math.PI / 2, 0, 0);
+              }
+              onComplete(dae.scene);
+            } catch (err) {
+              onComplete(null as unknown as THREE.Object3D, err as Error);
+            }
+          },
+          undefined,
+          (err) => onComplete(null as unknown as THREE.Object3D, err as Error),
+        );
+      } else if (/\.stl$/i.test(meshPath)) {
+        const stlLoader = new STLLoader(meshManager);
+        stlLoader.load(
+          meshPath,
+          (geom) => {
+            const mesh = new THREE.Mesh(
+              geom,
+              material || new THREE.MeshPhongMaterial(),
+            );
+            onComplete(mesh);
+          },
+          undefined,
+          (err) => onComplete(null as unknown as THREE.Object3D, err as Error),
+        );
+      } else {
+        onComplete(null as unknown as THREE.Object3D);
+      }
     };
 
     const finalizeIfReady = () => {

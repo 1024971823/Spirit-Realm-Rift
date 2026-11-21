@@ -154,14 +154,17 @@ export default function App() {
     activeModalRef.current = activeModal;
   }, [activeModal]);
 
+  const profileSaveSeqRef = useRef(0);
+
   const persistProfile = useCallback(async (patch: Partial<PlayerProfile>) => {
+    const seq = ++profileSaveSeqRef.current;
     try {
       const res = await fetch('/api/profile', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ id: playerIdRef.current, ...patch }),
       });
-      if (res.ok) {
+      if (res.ok && seq === profileSaveSeqRef.current) {
         const updated = normalizePlayerProfile((await res.json()) as Partial<PlayerProfile>, playerIdRef.current);
         setProfile(updated);
       }
@@ -270,6 +273,9 @@ export default function App() {
       .then((loaded: Partial<PlayerProfile> | null) => {
         if (loaded) {
           const normalized = normalizePlayerProfile(loaded, pid);
+          const effectiveLoadout = userModifiedClassRef.current
+            ? { ...normalized.loadout, robotClass: profileRef.current.loadout.robotClass }
+            : normalized.loadout;
           setProfile((prev) => {
             if (userModifiedClassRef.current) {
               return { ...normalized, loadout: { ...normalized.loadout, robotClass: prev.loadout.robotClass } };
@@ -277,7 +283,7 @@ export default function App() {
             return normalized;
           });
           net.setIdentity(normalized.id, normalized.callsign);
-          engine.updateConfig(normalized.loadout, normalized.controller);
+          engine.updateConfig(effectiveLoadout, normalized.controller);
         }
       })
       .catch(() => {});

@@ -200,6 +200,7 @@ export class LaserTagEngine {
   private latestSnapshot: MatchSnapshot | null = null;
   private loadout: LoadoutConfig;
   private controller: ControllerConfig;
+  private pendingRobotClassUntil = 0;
 
   private playerPos = new THREE.Vector3(-42, 0, 0);
   private playerVel = new THREE.Vector3(0, 0, 0);
@@ -261,6 +262,8 @@ export class LaserTagEngine {
   private lastNetMoveSent = 0;
   private lastHudPush = 0;
   private titleOrbitAngle = 0.4;
+  private envRenderTarget: THREE.WebGLRenderTarget | null = null;
+  private contextLost = false;
   private disposed = false;
 
   constructor(
@@ -317,7 +320,10 @@ export class LaserTagEngine {
 
     // 4. Mandatory RoomEnvironment PMREM
     const pmrem = new THREE.PMREMGenerator(this.renderer);
-    this.scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+    const envScene = new RoomEnvironment();
+    this.envRenderTarget = pmrem.fromScene(envScene, 0.04);
+    this.scene.environment = this.envRenderTarget.texture;
+    envScene.dispose();
     pmrem.dispose();
 
     // 5. Pooled InstancedMesh Particles (112 capacity)
@@ -423,18 +429,45 @@ export class LaserTagEngine {
   updateConfig(loadout: LoadoutConfig, controller: ControllerConfig): void {
     const safeLoadout = sanitizeLoadoutForXp(loadout, this.loadout, Number.MAX_SAFE_INTEGER);
     const safeController = normalizeControllerConfig(controller);
+    const classChanged = safeLoadout.robotClass !== this.loadout.robotClass;
+    const weaponChanged = safeLoadout.weaponId !== this.loadout.weaponId;
     const rigVisualChanged =
-      safeLoadout.robotClass !== this.loadout.robotClass ||
+      classChanged ||
       safeLoadout.skinId !== this.loadout.skinId ||
       safeLoadout.beamColorId !== this.loadout.beamColorId;
     this.loadout = safeLoadout;
     this.controller = safeController;
+    if (classChanged) {
+      this.pendingRobotClassUntil = performance.now() + 2000;
+      const me = this.latestSnapshot?.players.find((p) => p.id === this.localPlayerId);
+      if (me) {
+        const classSpec = ROBOT_CLASSES[safeLoadout.robotClass] || ROBOT_CLASSES.s1_striker;
+        const mag = canRobotClassFire(safeLoadout.robotClass)
+          ? (WEAPONS[safeLoadout.weaponId]?.magSize ?? 30)
+          : 0;
+        me.robotClass = safeLoadout.robotClass;
+        me.maxHp = classSpec.maxHp;
+        me.hp = Math.min(classSpec.maxHp, me.hp);
+        me.maxShield = classSpec.maxShield;
+        me.shield = Math.min(classSpec.maxShield, me.shield);
+        me.maxAmmo = mag;
+        if (!canRobotClassFire(safeLoadout.robotClass)) {
+          me.ammo = 0;
+        } else if (me.ammo === 0) {
+          me.ammo = mag;
+        }
+      }
+    }
     if (this.camera.fov !== safeController.fov && !this.adsActive) {
       this.camera.fov = safeController.fov;
       this.camera.updateProjectionMatrix();
     }
     if (rigVisualChanged) {
       this.ensureLocalRobotRig();
+    }
+    if (classChanged || weaponChanged || rigVisualChanged) {
+      this.lastHudPush = performance.now();
+      this.emitHudState();
     }
   }
 
@@ -511,11 +544,22 @@ export class LaserTagEngine {
     return t === 'amber' ? this.latestSnapshot.teamCreditsAmber : this.latestSnapshot.teamCreditsCobalt;
   }
 
+  private getEffectiveLocalRobotClass(me?: CombatantSnapshot): RobotClass {
+    if (me?.robotClass === this.loadout.robotClass) {
+      this.pendingRobotClassUntil = 0;
+      return me.robotClass;
+    }
+    if (performance.now() < this.pendingRobotClassUntil) {
+      return this.loadout.robotClass;
+    }
+    return me?.robotClass ?? this.loadout.robotClass ?? 's1_striker';
+  }
+
   private ensureLocalRobotRig(): void {
     if (!this.textures) return;
     const me = this.latestSnapshot?.players.find((p) => p.id === this.localPlayerId);
     const team: TeamId = me?.team ?? 'cobalt';
-    const robotClass: RobotClass = me?.robotClass ?? this.loadout.robotClass ?? 's1_striker';
+    const robotClass: RobotClass = this.getEffectiveLocalRobotClass(me);
     const skinHex = COSMETICS.find((c) => c.id === this.loadout.skinId)?.hex || '#262F3F';
     const beamHex = COSMETICS.find((c) => c.id === this.loadout.beamColorId)?.hex || '#06B6D4';
 
@@ -1955,13 +1999,15 @@ export class LaserTagEngine {
       }
     }
 
-      if (this.needsShaderCompile && !this.isSoftwareGl && now - this.lastShaderCompileMs > 250) {
-        this.needsShaderCompile = false;
-        this.lastShaderCompileMs = now;
-        this.renderer.compile(this.scene, this.camera);
-      }
+      if (!this.contextLost) {
+        if (this.needsShaderCompile && !this.isSoftwareGl && now - this.lastShaderCompileMs > 250) {
+          this.needsShaderCompile = false;
+          this.lastShaderCompileMs = now;
+          this.renderer.compile(this.scene, this.camera);
+        }
 
-      this.renderer.render(this.scene, this.camera);
+        this.renderer.render(this.scene, this.camera);
+      }
 
       // Throttled HUD state emission (<= 10Hz)
       if (now - this.lastHudPush >= 95) {
@@ -2003,19 +2049,20 @@ export class LaserTagEngine {
         ? formatEngineAlert(this.economyAlertState.key, this.lang, this.economyAlertState.packId)
         : null;
     const spec = GADGETS[this.loadout.gadgetId] || GADGETS.phase_dash;
-    const activeRobotClass = me?.robotClass ?? this.loadout.robotClass;
+    const activeRobotClass = this.getEffectiveLocalRobotClass(me);
     const classSpec = ROBOT_CLASSES[activeRobotClass] || ROBOT_CLASSES.s1_striker;
     const weaponSpec = WEAPONS[this.loadout.weaponId] || WEAPONS.pulse_carbine;
     const armed = canRobotClassFire(activeRobotClass);
+    const serverClassMatches = !me || me.robotClass === activeRobotClass;
     const overclockRemaining = Math.max(0, (this.localOverclockUntil - nowPerf) / 1000);
 
     this.callbacks.onHudUpdate({
-      hp: me ? me.hp : classSpec.maxHp,
-      maxHp: me ? me.maxHp : classSpec.maxHp,
-      shield: me ? me.shield : classSpec.maxShield,
-      maxShield: me ? me.maxShield : classSpec.maxShield,
-      ammo: armed ? (me ? me.ammo : weaponSpec.magSize) : 0,
-      maxAmmo: armed ? (me ? me.maxAmmo : weaponSpec.magSize) : 0,
+      hp: me ? Math.min(classSpec.maxHp, me.hp) : classSpec.maxHp,
+      maxHp: serverClassMatches && me ? me.maxHp : classSpec.maxHp,
+      shield: me ? Math.min(classSpec.maxShield, me.shield) : classSpec.maxShield,
+      maxShield: serverClassMatches && me ? me.maxShield : classSpec.maxShield,
+      ammo: armed ? (serverClassMatches && me ? me.ammo : weaponSpec.magSize) : 0,
+      maxAmmo: armed ? (serverClassMatches && me ? me.maxAmmo : weaponSpec.magSize) : 0,
       robotClass: activeRobotClass,
       teamCredits: this.getLocalTeamCredits(me?.team),
       heat: armed ? Math.round(this.heat) : 0,
@@ -2150,7 +2197,9 @@ export class LaserTagEngine {
       } else if (e.code === 'Digit3') {
         this.buyAmmoPack('combat_resupply');
       } else if (e.code === 'KeyU') {
-        const nextClass: RobotClass = this.loadout.robotClass === 'ep_miner' ? 's1_striker' : 'ep_miner';
+        const me = this.latestSnapshot?.players.find((p) => p.id === this.localPlayerId);
+        const currentClass = this.getEffectiveLocalRobotClass(me);
+        const nextClass: RobotClass = currentClass === 'ep_miner' ? 's1_striker' : 'ep_miner';
         this.callbacks.onQuickSwitchClass?.(nextClass);
       } else if (this.matchesBinding(e, b.reload, ['KeyR'])) {
         this.heat = Math.max(0, this.heat - 45);
@@ -2248,6 +2297,15 @@ export class LaserTagEngine {
     this.renderer.setSize(w, h);
   };
 
+  private onWebGLContextLost = (e: Event) => {
+    e.preventDefault();
+    this.contextLost = true;
+  };
+
+  private onWebGLContextRestored = () => {
+    this.contextLost = false;
+  };
+
   private bindEvents(): void {
     window.addEventListener('keydown', this.onKeyDown);
     window.addEventListener('keyup', this.onKeyUp);
@@ -2259,6 +2317,8 @@ export class LaserTagEngine {
     window.addEventListener('resize', this.onResize);
     document.addEventListener('pointerlockchange', this.onPointerLockChange);
     document.addEventListener('visibilitychange', this.onWindowBlur);
+    this.renderer.domElement.addEventListener('webglcontextlost', this.onWebGLContextLost, false);
+    this.renderer.domElement.addEventListener('webglcontextrestored', this.onWebGLContextRestored, false);
   }
 
   dispose(): void {
@@ -2275,6 +2335,8 @@ export class LaserTagEngine {
     window.removeEventListener('resize', this.onResize);
     document.removeEventListener('pointerlockchange', this.onPointerLockChange);
     document.removeEventListener('visibilitychange', this.onWindowBlur);
+    this.renderer.domElement.removeEventListener('webglcontextlost', this.onWebGLContextLost, false);
+    this.renderer.domElement.removeEventListener('webglcontextrestored', this.onWebGLContextRestored, false);
     this.disposeObject3D(this.arenaGroup);
     if (this.localRobotRig) {
       this.disposeObject3D(this.localRobotRig.root);
@@ -2297,6 +2359,8 @@ export class LaserTagEngine {
     }
     this.miningBeamPool = [];
     this.textures?.dispose();
+    this.envRenderTarget?.dispose();
+    this.envRenderTarget = null;
     this.renderer.dispose();
     if (this.renderer.domElement.parentNode === this.container) {
       this.container.removeChild(this.renderer.domElement);

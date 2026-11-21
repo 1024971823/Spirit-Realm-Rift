@@ -474,6 +474,10 @@ export const UI_TEXT = {
     killFeedElimTag: '击杀',
     killFeedDownTag: '阵亡',
     killFeedHazardTag: '环境',
+    minimapAria: '实时战术小地图',
+    minimapHazardActive: (n: number) => `${n} 危险激活`,
+    minimapHazardWarn: (n: number) => `${n} 危险预警`,
+    minimapClear: '区域安全',
     // PauseModal
     matchPaused: '比赛已暂停',
     pauseDesc: '服务器上的机甲大师竞技场仍在实时运行中。',
@@ -696,6 +700,10 @@ export const UI_TEXT = {
     killFeedElimTag: 'ELIM',
     killFeedDownTag: 'DOWN',
     killFeedHazardTag: 'HAZARD',
+    minimapAria: 'Real-time tactical minimap',
+    minimapHazardActive: (n: number) => `${n} HAZARD ACTIVE`,
+    minimapHazardWarn: (n: number) => `${n} HAZARD WARN`,
+    minimapClear: 'SECTOR CLEAR',
     // PauseModal
     matchPaused: 'Match Paused',
     pauseDesc: 'Arena simulation remains live for active RoboMaster units on the server.',

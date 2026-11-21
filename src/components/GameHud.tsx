@@ -26,6 +26,7 @@ import {
   WEAPON_I18N,
 } from '../i18n/translations';
 import { KillFeed } from './KillFeed';
+import { TacticalMinimap } from './TacticalMinimap';
 import type { ChatMessage } from '../net/clientSocket';
 import { AMMO_PACKS, canRobotClassFire, GADGETS, MAPS, ROBOT_CLASSES, WEAPONS } from '../shared/catalog';
 import type {
@@ -103,19 +104,9 @@ export const GameHud: React.FC<GameHudProps> = ({
   const localizedGadgetName = GADGET_I18N[lang][gadget.id]?.name ?? gadget.name;
   const localizedClassText = ROBOT_CLASS_I18N[lang][activeClass] || ROBOT_CLASS_I18N[lang].s1_striker;
 
-  const staticColliderRects = useMemo(
-    () =>
-      map.colliders.map((c) => (
-        <rect
-          key={c.id}
-          x={c.x - c.w / 2}
-          y={c.z - c.d / 2}
-          width={c.w}
-          height={c.d}
-          fill="#334155"
-        />
-      )),
-    [map],
+  const localPose = useMemo(
+    () => ({ pos: hud.playerPos, yaw: hud.playerYaw }),
+    [hud.playerPos, hud.playerYaw],
   );
 
   const timeRemaining = snapshot ? Math.max(0, Math.ceil(snapshot.durationSec - snapshot.elapsedSec)) : 180;
@@ -169,106 +160,17 @@ export const GameHud: React.FC<GameHudProps> = ({
         />
       )}
 
-      {/* TOP-LEFT: Tactical Radar Minimap with Ore Veins */}
-      <div className="fixed top-4 left-4 flex flex-col gap-1.5">
-        <div className="chamfer-sm w-36 h-36 bg-[#0B1019]/92 border border-cyan-500/25 p-1.5 shadow-lg">
-          <svg viewBox={`-${map.halfSize} -${map.halfSize} ${map.halfSize * 2} ${map.halfSize * 2}`} className="w-full h-full">
-            <rect
-              x={-map.halfSize}
-              y={-map.halfSize}
-              width={map.halfSize * 2}
-              height={map.halfSize * 2}
-              fill="#070B12"
-            />
-            {staticColliderRects}
-            {map.barriers.map((b) => {
-              const st = snapshot?.barriers.find((s) => s.id === b.id);
-              if (st?.destroyed) return null;
-              return (
-                <rect
-                  key={b.id}
-                  x={b.x - b.w / 2}
-                  y={b.z - b.d / 2}
-                  width={b.w}
-                  height={b.d}
-                  fill="#38BDF8"
-                  opacity="0.7"
-                />
-              );
-            })}
-            {/* Ore Vein Diamonds */}
-            {map.oreNodes.map((o) => {
-              const rt = snapshot?.oreNodes.find((n) => n.id === o.id);
-              const depleted = rt?.depleted;
-              const fill = depleted ? '#334155' : o.tier === 'rich' ? '#FBBF24' : '#34D399';
-              return (
-                <polygon
-                  key={o.id}
-                  points={`${o.x},${o.z - 2.6} ${o.x + 2.6},${o.z} ${o.x},${o.z + 2.6} ${o.x - 2.6},${o.z}`}
-                  fill={fill}
-                  opacity={depleted ? 0.4 : 0.92}
-                />
-              );
-            })}
-            {map.hazards.map((h, idx) => {
-              const rt = snapshot?.hazards[idx];
-              const stroke = rt?.phase === 'active' ? '#EF4444' : rt?.phase === 'telegraph' ? '#F59E0B' : '#475569';
-              return (
-                <circle
-                  key={h.id}
-                  cx={h.x}
-                  cy={h.z}
-                  r={h.radius}
-                  fill="none"
-                  stroke={stroke}
-                  strokeWidth="0.9"
-                  opacity="0.65"
-                />
-              );
-            })}
-            {snapshot?.players.map((p) => {
-              if (!p.alive) return null;
-              const isMe = p.id === localPlayerId;
-              if (isMe) {
-                const rotDeg = (-hud.playerYaw * 180) / Math.PI;
-                return (
-                  <g key={p.id} transform={`translate(${hud.playerPos.x}, ${hud.playerPos.z}) rotate(${rotDeg})`}>
-                    <polygon points="0,-3.4 2.4,2.2 0,1.2 -2.4,2.2" fill="#FFFFFF" />
-                  </g>
-                );
-              }
-              const fill = snapshot?.mode === 'ffa'
-                ? '#F59E0B'
-                : p.robotClass === 'ep_miner' && p.team === myTeam
-                  ? '#34D399'
-                  : p.team === 'cobalt'
-                    ? '#06B6D4'
-                    : '#F59E0B';
-              return (
-                <circle
-                  key={p.id}
-                  cx={p.x}
-                  cy={p.z}
-                  r={p.robotClass === 'ep_miner' ? 1.9 : 1.5}
-                  fill={fill}
-                />
-              );
-            })}
-          </svg>
-        </div>
-        <div className="flex items-center gap-2 text-[11px] font-mono-tabular text-slate-300 hud-text-stroke">
-          <span>{localizedMapName} · {snapshot?.roomId || 'ARENA'}</span>
-          {snapshot?.isPrivate && (
-            <button
-              type="button"
-              onClick={handleCopyInvite}
-              className="pointer-events-auto px-1.5 py-0.5 bg-amber-500/20 border border-amber-400/50 text-amber-300 hover:bg-amber-500/30 text-[10px] cursor-pointer"
-            >
-              {copiedCode ? t.copied : t.copyCode}
-            </button>
-          )}
-        </div>
-      </div>
+      {/* TOP-LEFT: Dedicated Tactical Minimap (Real-Time Players & Active Hazards) */}
+      <TacticalMinimap
+        map={map}
+        localizedMapName={localizedMapName}
+        snapshot={snapshot}
+        localPlayerId={localPlayerId}
+        localTeam={myTeam}
+        localPose={localPose}
+        copiedCode={copiedCode}
+        onCopyInvite={handleCopyInvite}
+      />
 
       {/* TOP-CENTER: Pro League Scoreboard & Team Economy Credits */}
       <div className="fixed top-4 left-1/2 -translate-x-1/2 flex flex-col items-center gap-1.5">

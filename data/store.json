@@ -4268,6 +4268,7 @@
         "damageDealt": 19450,
         "hazardKills": 9,
         "barriersDestroyed": 27,
+        "oreMined": 0,
         "mmr": 1285,
         "xp": 620,
         "credits": 1450,
@@ -4307,6 +4308,1017 @@
           {
             "id": "seed_m2",
             "timestamp": 1795183558374,
+            "mapId": "cryo_relay",
+            "mode": "control_core",
+            "won": false,
+            "kills": 11,
+            "deaths": 10,
+            "accuracy": 41,
+            "mmrDelta": -14,
+            "xpEarned": 120
+          }
+        ]
+      }
+    },
+    "op_i59u19s": {
+      "id": "op_i59u19s",
+      "callsign": "Prism-U19S",
+      "platform": "pc",
+      "crossplayEnabled": true,
+      "loadout": {
+        "robotClass": "s1_striker",
+        "weaponId": "pulse_carbine",
+        "gadgetId": "phase_dash",
+        "beamColorId": "beam_cyan",
+        "skinId": "skin_graphite",
+        "emblemId": "emblem_prism"
+      },
+      "controller": {
+        "mouseSensitivity": 1,
+        "adsMultiplier": 0.55,
+        "fov": 74,
+        "invertY": false,
+        "crosshairStyle": "precision",
+        "gamepadEnabled": true,
+        "leftStickDeadzone": 0.15,
+        "rightStickDeadzone": 0.12,
+        "gamepadSensitivity": 2.6,
+        "triggerThreshold": 0.25,
+        "vibrationEnabled": true,
+        "bindings": {
+          "fire": "Mouse0 / RT",
+          "ads": "Mouse2 / LT",
+          "dash": "Shift / B",
+          "gadget": "Q / RB",
+          "classSkill": "E / Y",
+          "buyAmmo": "B / DPadUp",
+          "reload": "R / X",
+          "voicePtt": "V / LB"
+        }
+      },
+      "stats": {
+        "matchesPlayed": 12,
+        "wins": 7,
+        "losses": 5,
+        "kills": 138,
+        "deaths": 94,
+        "assists": 41,
+        "shotsFired": 1840,
+        "shotsHit": 792,
+        "damageDealt": 19450,
+        "hazardKills": 9,
+        "barriersDestroyed": 27,
+        "oreMined": 0,
+        "mmr": 1285,
+        "xp": 620,
+        "credits": 1450,
+        "weaponStats": {
+          "pulse_carbine": {
+            "kills": 84,
+            "shotsFired": 1320,
+            "shotsHit": 540,
+            "damageDealt": 11200
+          },
+          "prism_railgun": {
+            "kills": 36,
+            "shotsFired": 220,
+            "shotsHit": 122,
+            "damageDealt": 5850
+          },
+          "scatter_projector": {
+            "kills": 18,
+            "shotsFired": 300,
+            "shotsHit": 130,
+            "damageDealt": 2400
+          }
+        },
+        "recentMatches": [
+          {
+            "id": "seed_m1",
+            "timestamp": 1795215557968,
+            "mapId": "reactor_foundry",
+            "mode": "team_clash",
+            "won": true,
+            "kills": 14,
+            "deaths": 7,
+            "accuracy": 46,
+            "mmrDelta": 22,
+            "xpEarned": 185
+          },
+          {
+            "id": "seed_m2",
+            "timestamp": 1795226357968,
+            "mapId": "cryo_relay",
+            "mode": "control_core",
+            "won": false,
+            "kills": 11,
+            "deaths": 10,
+            "accuracy": 41,
+            "mmrDelta": -14,
+            "xpEarned": 120
+          }
+        ]
+      }
+    },
+    "op_tz3q95p": {
+      "id": "op_tz3q95p",
+      "callsign": "Prism-Q95P",
+      "platform": "pc",
+      "crossplayEnabled": true,
+      "loadout": {
+        "robotClass": "s1_striker",
+        "weaponId": "pulse_carbine",
+        "gadgetId": "phase_dash",
+        "beamColorId": "beam_cyan",
+        "skinId": "skin_graphite",
+        "emblemId": "emblem_prism"
+      },
+      "controller": {
+        "mouseSensitivity": 1,
+        "adsMultiplier": 0.55,
+        "fov": 74,
+        "invertY": false,
+        "crosshairStyle": "precision",
+        "gamepadEnabled": true,
+        "leftStickDeadzone": 0.15,
+        "rightStickDeadzone": 0.12,
+        "gamepadSensitivity": 2.6,
+        "triggerThreshold": 0.25,
+        "vibrationEnabled": true,
+        "bindings": {
+          "fire": "Mouse0 / RT",
+          "ads": "Mouse2 / LT",
+          "dash": "Shift / B",
+          "gadget": "Q / RB",
+          "classSkill": "E / Y",
+          "buyAmmo": "B / DPadUp",
+          "reload": "R / X",
+          "voicePtt": "V / LB"
+        }
+      },
+      "stats": {
+        "matchesPlayed": 12,
+        "wins": 7,
+        "losses": 5,
+        "kills": 138,
+        "deaths": 94,
+        "assists": 41,
+        "shotsFired": 1840,
+        "shotsHit": 792,
+        "damageDealt": 19450,
+        "hazardKills": 9,
+        "barriersDestroyed": 27,
+        "oreMined": 0,
+        "mmr": 1285,
+        "xp": 620,
+        "credits": 1450,
+        "weaponStats": {
+          "pulse_carbine": {
+            "kills": 84,
+            "shotsFired": 1320,
+            "shotsHit": 540,
+            "damageDealt": 11200
+          },
+          "prism_railgun": {
+            "kills": 36,
+            "shotsFired": 220,
+            "shotsHit": 122,
+            "damageDealt": 5850
+          },
+          "scatter_projector": {
+            "kills": 18,
+            "shotsFired": 300,
+            "shotsHit": 130,
+            "damageDealt": 2400
+          }
+        },
+        "recentMatches": [
+          {
+            "id": "seed_m1",
+            "timestamp": 1795215593535,
+            "mapId": "reactor_foundry",
+            "mode": "team_clash",
+            "won": true,
+            "kills": 14,
+            "deaths": 7,
+            "accuracy": 46,
+            "mmrDelta": 22,
+            "xpEarned": 185
+          },
+          {
+            "id": "seed_m2",
+            "timestamp": 1795226393535,
+            "mapId": "cryo_relay",
+            "mode": "control_core",
+            "won": false,
+            "kills": 11,
+            "deaths": 10,
+            "accuracy": 41,
+            "mmrDelta": -14,
+            "xpEarned": 120
+          }
+        ]
+      }
+    },
+    "op_uyhse2q": {
+      "id": "op_uyhse2q",
+      "callsign": "Prism-SE2Q",
+      "platform": "pc",
+      "crossplayEnabled": true,
+      "loadout": {
+        "robotClass": "s1_striker",
+        "weaponId": "pulse_carbine",
+        "gadgetId": "phase_dash",
+        "beamColorId": "beam_cyan",
+        "skinId": "skin_graphite",
+        "emblemId": "emblem_prism"
+      },
+      "controller": {
+        "mouseSensitivity": 1,
+        "adsMultiplier": 0.55,
+        "fov": 74,
+        "invertY": false,
+        "crosshairStyle": "precision",
+        "gamepadEnabled": true,
+        "leftStickDeadzone": 0.15,
+        "rightStickDeadzone": 0.12,
+        "gamepadSensitivity": 2.6,
+        "triggerThreshold": 0.25,
+        "vibrationEnabled": true,
+        "bindings": {
+          "fire": "Mouse0 / RT",
+          "ads": "Mouse2 / LT",
+          "dash": "Shift / B",
+          "gadget": "Q / RB",
+          "classSkill": "E / Y",
+          "buyAmmo": "B / DPadUp",
+          "reload": "R / X",
+          "voicePtt": "V / LB"
+        }
+      },
+      "stats": {
+        "matchesPlayed": 13,
+        "wins": 8,
+        "losses": 5,
+        "kills": 138,
+        "deaths": 94,
+        "assists": 41,
+        "shotsFired": 1840,
+        "shotsHit": 792,
+        "damageDealt": 19450,
+        "hazardKills": 9,
+        "barriersDestroyed": 27,
+        "oreMined": 0,
+        "mmr": 1295,
+        "xp": 765,
+        "credits": 1559,
+        "weaponStats": {
+          "pulse_carbine": {
+            "kills": 84,
+            "shotsFired": 1320,
+            "shotsHit": 540,
+            "damageDealt": 11200
+          },
+          "prism_railgun": {
+            "kills": 36,
+            "shotsFired": 220,
+            "shotsHit": 122,
+            "damageDealt": 5850
+          },
+          "scatter_projector": {
+            "kills": 18,
+            "shotsFired": 300,
+            "shotsHit": 130,
+            "damageDealt": 2400
+          }
+        },
+        "recentMatches": [
+          {
+            "id": "m_1795236698561_e2q",
+            "timestamp": 1795236698561,
+            "mapId": "reactor_foundry",
+            "mode": "team_clash",
+            "won": true,
+            "kills": 0,
+            "deaths": 0,
+            "accuracy": 0,
+            "mmrDelta": 10,
+            "xpEarned": 145
+          },
+          {
+            "id": "seed_m1",
+            "timestamp": 1795218518523,
+            "mapId": "reactor_foundry",
+            "mode": "team_clash",
+            "won": true,
+            "kills": 14,
+            "deaths": 7,
+            "accuracy": 46,
+            "mmrDelta": 22,
+            "xpEarned": 185
+          },
+          {
+            "id": "seed_m2",
+            "timestamp": 1795229318523,
+            "mapId": "cryo_relay",
+            "mode": "control_core",
+            "won": false,
+            "kills": 11,
+            "deaths": 10,
+            "accuracy": 41,
+            "mmrDelta": -14,
+            "xpEarned": 120
+          }
+        ]
+      }
+    },
+    "op_ke7xaj5": {
+      "id": "op_ke7xaj5",
+      "callsign": "Prism-XAJ5",
+      "platform": "pc",
+      "crossplayEnabled": true,
+      "loadout": {
+        "robotClass": "s1_striker",
+        "weaponId": "pulse_carbine",
+        "gadgetId": "phase_dash",
+        "beamColorId": "beam_cyan",
+        "skinId": "skin_graphite",
+        "emblemId": "emblem_prism"
+      },
+      "controller": {
+        "mouseSensitivity": 1,
+        "adsMultiplier": 0.55,
+        "fov": 74,
+        "invertY": false,
+        "crosshairStyle": "precision",
+        "gamepadEnabled": true,
+        "leftStickDeadzone": 0.15,
+        "rightStickDeadzone": 0.12,
+        "gamepadSensitivity": 2.6,
+        "triggerThreshold": 0.25,
+        "vibrationEnabled": true,
+        "bindings": {
+          "fire": "Mouse0 / RT",
+          "ads": "Mouse2 / LT",
+          "dash": "Shift / B",
+          "gadget": "Q / RB",
+          "classSkill": "E / Y",
+          "buyAmmo": "B / DPadUp",
+          "reload": "R / X",
+          "voicePtt": "V / LB"
+        }
+      },
+      "stats": {
+        "matchesPlayed": 12,
+        "wins": 7,
+        "losses": 5,
+        "kills": 138,
+        "deaths": 94,
+        "assists": 41,
+        "shotsFired": 1840,
+        "shotsHit": 792,
+        "damageDealt": 19450,
+        "hazardKills": 9,
+        "barriersDestroyed": 27,
+        "oreMined": 0,
+        "mmr": 1285,
+        "xp": 620,
+        "credits": 1450,
+        "weaponStats": {
+          "pulse_carbine": {
+            "kills": 84,
+            "shotsFired": 1320,
+            "shotsHit": 540,
+            "damageDealt": 11200
+          },
+          "prism_railgun": {
+            "kills": 36,
+            "shotsFired": 220,
+            "shotsHit": 122,
+            "damageDealt": 5850
+          },
+          "scatter_projector": {
+            "kills": 18,
+            "shotsFired": 300,
+            "shotsHit": 130,
+            "damageDealt": 2400
+          }
+        },
+        "recentMatches": [
+          {
+            "id": "seed_m1",
+            "timestamp": 1795218739789,
+            "mapId": "reactor_foundry",
+            "mode": "team_clash",
+            "won": true,
+            "kills": 14,
+            "deaths": 7,
+            "accuracy": 46,
+            "mmrDelta": 22,
+            "xpEarned": 185
+          },
+          {
+            "id": "seed_m2",
+            "timestamp": 1795229539789,
+            "mapId": "cryo_relay",
+            "mode": "control_core",
+            "won": false,
+            "kills": 11,
+            "deaths": 10,
+            "accuracy": 41,
+            "mmrDelta": -14,
+            "xpEarned": 120
+          }
+        ]
+      }
+    },
+    "op_fn9s9k1": {
+      "id": "op_fn9s9k1",
+      "callsign": "Prism-S9K1",
+      "platform": "pc",
+      "crossplayEnabled": true,
+      "loadout": {
+        "robotClass": "ep_miner",
+        "weaponId": "pulse_carbine",
+        "gadgetId": "phase_dash",
+        "beamColorId": "beam_cyan",
+        "skinId": "skin_graphite",
+        "emblemId": "emblem_prism"
+      },
+      "controller": {
+        "mouseSensitivity": 1,
+        "adsMultiplier": 0.55,
+        "fov": 74,
+        "invertY": false,
+        "crosshairStyle": "precision",
+        "gamepadEnabled": true,
+        "leftStickDeadzone": 0.15,
+        "rightStickDeadzone": 0.12,
+        "gamepadSensitivity": 2.6,
+        "triggerThreshold": 0.25,
+        "vibrationEnabled": true,
+        "bindings": {
+          "fire": "Mouse0 / RT",
+          "ads": "Mouse2 / LT",
+          "dash": "Shift / B",
+          "gadget": "Q / RB",
+          "classSkill": "E / Y",
+          "buyAmmo": "B / DPadUp",
+          "reload": "R / X",
+          "voicePtt": "V / LB"
+        }
+      },
+      "stats": {
+        "matchesPlayed": 12,
+        "wins": 7,
+        "losses": 5,
+        "kills": 138,
+        "deaths": 94,
+        "assists": 41,
+        "shotsFired": 1840,
+        "shotsHit": 792,
+        "damageDealt": 19450,
+        "hazardKills": 9,
+        "barriersDestroyed": 27,
+        "oreMined": 0,
+        "mmr": 1285,
+        "xp": 620,
+        "credits": 1450,
+        "weaponStats": {
+          "pulse_carbine": {
+            "kills": 84,
+            "shotsFired": 1320,
+            "shotsHit": 540,
+            "damageDealt": 11200
+          },
+          "prism_railgun": {
+            "kills": 36,
+            "shotsFired": 220,
+            "shotsHit": 122,
+            "damageDealt": 5850
+          },
+          "scatter_projector": {
+            "kills": 18,
+            "shotsFired": 300,
+            "shotsHit": 130,
+            "damageDealt": 2400
+          }
+        },
+        "recentMatches": [
+          {
+            "id": "seed_m1",
+            "timestamp": 1795218868629,
+            "mapId": "reactor_foundry",
+            "mode": "team_clash",
+            "won": true,
+            "kills": 14,
+            "deaths": 7,
+            "accuracy": 46,
+            "mmrDelta": 22,
+            "xpEarned": 185
+          },
+          {
+            "id": "seed_m2",
+            "timestamp": 1795229668629,
+            "mapId": "cryo_relay",
+            "mode": "control_core",
+            "won": false,
+            "kills": 11,
+            "deaths": 10,
+            "accuracy": 41,
+            "mmrDelta": -14,
+            "xpEarned": 120
+          }
+        ]
+      }
+    },
+    "op_jd3cxmj": {
+      "id": "op_jd3cxmj",
+      "callsign": "Prism-CXMJ",
+      "platform": "pc",
+      "crossplayEnabled": true,
+      "loadout": {
+        "robotClass": "s1_striker",
+        "weaponId": "pulse_carbine",
+        "gadgetId": "phase_dash",
+        "beamColorId": "beam_cyan",
+        "skinId": "skin_graphite",
+        "emblemId": "emblem_prism"
+      },
+      "controller": {
+        "mouseSensitivity": 1,
+        "adsMultiplier": 0.55,
+        "fov": 74,
+        "invertY": false,
+        "crosshairStyle": "precision",
+        "gamepadEnabled": true,
+        "leftStickDeadzone": 0.15,
+        "rightStickDeadzone": 0.12,
+        "gamepadSensitivity": 2.6,
+        "triggerThreshold": 0.25,
+        "vibrationEnabled": true,
+        "bindings": {
+          "fire": "Mouse0 / RT",
+          "ads": "Mouse2 / LT",
+          "dash": "Shift / B",
+          "gadget": "Q / RB",
+          "classSkill": "E / Y",
+          "buyAmmo": "B / DPadUp",
+          "reload": "R / X",
+          "voicePtt": "V / LB"
+        }
+      },
+      "stats": {
+        "matchesPlayed": 12,
+        "wins": 7,
+        "losses": 5,
+        "kills": 138,
+        "deaths": 94,
+        "assists": 41,
+        "shotsFired": 1840,
+        "shotsHit": 792,
+        "damageDealt": 19450,
+        "hazardKills": 9,
+        "barriersDestroyed": 27,
+        "oreMined": 0,
+        "mmr": 1285,
+        "xp": 620,
+        "credits": 1450,
+        "weaponStats": {
+          "pulse_carbine": {
+            "kills": 84,
+            "shotsFired": 1320,
+            "shotsHit": 540,
+            "damageDealt": 11200
+          },
+          "prism_railgun": {
+            "kills": 36,
+            "shotsFired": 220,
+            "shotsHit": 122,
+            "damageDealt": 5850
+          },
+          "scatter_projector": {
+            "kills": 18,
+            "shotsFired": 300,
+            "shotsHit": 130,
+            "damageDealt": 2400
+          }
+        },
+        "recentMatches": [
+          {
+            "id": "seed_m1",
+            "timestamp": 1795219027837,
+            "mapId": "reactor_foundry",
+            "mode": "team_clash",
+            "won": true,
+            "kills": 14,
+            "deaths": 7,
+            "accuracy": 46,
+            "mmrDelta": 22,
+            "xpEarned": 185
+          },
+          {
+            "id": "seed_m2",
+            "timestamp": 1795229827837,
+            "mapId": "cryo_relay",
+            "mode": "control_core",
+            "won": false,
+            "kills": 11,
+            "deaths": 10,
+            "accuracy": 41,
+            "mmrDelta": -14,
+            "xpEarned": 120
+          }
+        ]
+      }
+    },
+    "op_dz4huic": {
+      "id": "op_dz4huic",
+      "callsign": "Prism-HUIC",
+      "platform": "pc",
+      "crossplayEnabled": true,
+      "loadout": {
+        "robotClass": "s1_striker",
+        "weaponId": "pulse_carbine",
+        "gadgetId": "phase_dash",
+        "beamColorId": "beam_cyan",
+        "skinId": "skin_graphite",
+        "emblemId": "emblem_prism"
+      },
+      "controller": {
+        "mouseSensitivity": 1,
+        "adsMultiplier": 0.55,
+        "fov": 74,
+        "invertY": false,
+        "crosshairStyle": "precision",
+        "gamepadEnabled": true,
+        "leftStickDeadzone": 0.15,
+        "rightStickDeadzone": 0.12,
+        "gamepadSensitivity": 2.6,
+        "triggerThreshold": 0.25,
+        "vibrationEnabled": true,
+        "bindings": {
+          "fire": "Mouse0 / RT",
+          "ads": "Mouse2 / LT",
+          "dash": "Shift / B",
+          "gadget": "Q / RB",
+          "classSkill": "E / Y",
+          "buyAmmo": "B / DPadUp",
+          "reload": "R / X",
+          "voicePtt": "V / LB"
+        }
+      },
+      "stats": {
+        "matchesPlayed": 12,
+        "wins": 7,
+        "losses": 5,
+        "kills": 138,
+        "deaths": 94,
+        "assists": 41,
+        "shotsFired": 1840,
+        "shotsHit": 792,
+        "damageDealt": 19450,
+        "hazardKills": 9,
+        "barriersDestroyed": 27,
+        "oreMined": 0,
+        "mmr": 1285,
+        "xp": 620,
+        "credits": 1450,
+        "weaponStats": {
+          "pulse_carbine": {
+            "kills": 84,
+            "shotsFired": 1320,
+            "shotsHit": 540,
+            "damageDealt": 11200
+          },
+          "prism_railgun": {
+            "kills": 36,
+            "shotsFired": 220,
+            "shotsHit": 122,
+            "damageDealt": 5850
+          },
+          "scatter_projector": {
+            "kills": 18,
+            "shotsFired": 300,
+            "shotsHit": 130,
+            "damageDealt": 2400
+          }
+        },
+        "recentMatches": [
+          {
+            "id": "seed_m1",
+            "timestamp": 1795219081052,
+            "mapId": "reactor_foundry",
+            "mode": "team_clash",
+            "won": true,
+            "kills": 14,
+            "deaths": 7,
+            "accuracy": 46,
+            "mmrDelta": 22,
+            "xpEarned": 185
+          },
+          {
+            "id": "seed_m2",
+            "timestamp": 1795229881052,
+            "mapId": "cryo_relay",
+            "mode": "control_core",
+            "won": false,
+            "kills": 11,
+            "deaths": 10,
+            "accuracy": 41,
+            "mmrDelta": -14,
+            "xpEarned": 120
+          }
+        ]
+      }
+    },
+    "op_mudrt7d": {
+      "id": "op_mudrt7d",
+      "callsign": "Prism-RT7D",
+      "platform": "pc",
+      "crossplayEnabled": true,
+      "loadout": {
+        "robotClass": "ep_miner",
+        "weaponId": "pulse_carbine",
+        "gadgetId": "phase_dash",
+        "beamColorId": "beam_cyan",
+        "skinId": "skin_graphite",
+        "emblemId": "emblem_prism"
+      },
+      "controller": {
+        "mouseSensitivity": 1,
+        "adsMultiplier": 0.55,
+        "fov": 74,
+        "invertY": false,
+        "crosshairStyle": "precision",
+        "gamepadEnabled": true,
+        "leftStickDeadzone": 0.15,
+        "rightStickDeadzone": 0.12,
+        "gamepadSensitivity": 2.6,
+        "triggerThreshold": 0.25,
+        "vibrationEnabled": true,
+        "bindings": {
+          "fire": "Mouse0 / RT",
+          "ads": "Mouse2 / LT",
+          "dash": "Shift / B",
+          "gadget": "Q / RB",
+          "classSkill": "E / Y",
+          "buyAmmo": "B / DPadUp",
+          "reload": "R / X",
+          "voicePtt": "V / LB"
+        }
+      },
+      "stats": {
+        "matchesPlayed": 12,
+        "wins": 7,
+        "losses": 5,
+        "kills": 138,
+        "deaths": 94,
+        "assists": 41,
+        "shotsFired": 1840,
+        "shotsHit": 792,
+        "damageDealt": 19450,
+        "hazardKills": 9,
+        "barriersDestroyed": 27,
+        "oreMined": 0,
+        "mmr": 1285,
+        "xp": 620,
+        "credits": 1450,
+        "weaponStats": {
+          "pulse_carbine": {
+            "kills": 84,
+            "shotsFired": 1320,
+            "shotsHit": 540,
+            "damageDealt": 11200
+          },
+          "prism_railgun": {
+            "kills": 36,
+            "shotsFired": 220,
+            "shotsHit": 122,
+            "damageDealt": 5850
+          },
+          "scatter_projector": {
+            "kills": 18,
+            "shotsFired": 300,
+            "shotsHit": 130,
+            "damageDealt": 2400
+          }
+        },
+        "recentMatches": [
+          {
+            "id": "seed_m1",
+            "timestamp": 1795219147147,
+            "mapId": "reactor_foundry",
+            "mode": "team_clash",
+            "won": true,
+            "kills": 14,
+            "deaths": 7,
+            "accuracy": 46,
+            "mmrDelta": 22,
+            "xpEarned": 185
+          },
+          {
+            "id": "seed_m2",
+            "timestamp": 1795229947147,
+            "mapId": "cryo_relay",
+            "mode": "control_core",
+            "won": false,
+            "kills": 11,
+            "deaths": 10,
+            "accuracy": 41,
+            "mmrDelta": -14,
+            "xpEarned": 120
+          }
+        ]
+      }
+    },
+    "op_iovu5wa": {
+      "id": "op_iovu5wa",
+      "callsign": "Prism-U5WA",
+      "platform": "pc",
+      "crossplayEnabled": true,
+      "loadout": {
+        "robotClass": "s1_striker",
+        "weaponId": "pulse_carbine",
+        "gadgetId": "phase_dash",
+        "beamColorId": "beam_cyan",
+        "skinId": "skin_graphite",
+        "emblemId": "emblem_prism"
+      },
+      "controller": {
+        "mouseSensitivity": 1,
+        "adsMultiplier": 0.55,
+        "fov": 74,
+        "invertY": false,
+        "crosshairStyle": "precision",
+        "gamepadEnabled": true,
+        "leftStickDeadzone": 0.15,
+        "rightStickDeadzone": 0.12,
+        "gamepadSensitivity": 2.6,
+        "triggerThreshold": 0.25,
+        "vibrationEnabled": true,
+        "bindings": {
+          "fire": "Mouse0 / RT",
+          "ads": "Mouse2 / LT",
+          "dash": "Shift / B",
+          "gadget": "Q / RB",
+          "classSkill": "E / Y",
+          "buyAmmo": "B / DPadUp",
+          "reload": "R / X",
+          "voicePtt": "V / LB"
+        }
+      },
+      "stats": {
+        "matchesPlayed": 12,
+        "wins": 7,
+        "losses": 5,
+        "kills": 138,
+        "deaths": 94,
+        "assists": 41,
+        "shotsFired": 1840,
+        "shotsHit": 792,
+        "damageDealt": 19450,
+        "hazardKills": 9,
+        "barriersDestroyed": 27,
+        "oreMined": 0,
+        "mmr": 1285,
+        "xp": 620,
+        "credits": 1450,
+        "weaponStats": {
+          "pulse_carbine": {
+            "kills": 84,
+            "shotsFired": 1320,
+            "shotsHit": 540,
+            "damageDealt": 11200
+          },
+          "prism_railgun": {
+            "kills": 36,
+            "shotsFired": 220,
+            "shotsHit": 122,
+            "damageDealt": 5850
+          },
+          "scatter_projector": {
+            "kills": 18,
+            "shotsFired": 300,
+            "shotsHit": 130,
+            "damageDealt": 2400
+          }
+        },
+        "recentMatches": [
+          {
+            "id": "seed_m1",
+            "timestamp": 1795219289362,
+            "mapId": "reactor_foundry",
+            "mode": "team_clash",
+            "won": true,
+            "kills": 14,
+            "deaths": 7,
+            "accuracy": 46,
+            "mmrDelta": 22,
+            "xpEarned": 185
+          },
+          {
+            "id": "seed_m2",
+            "timestamp": 1795230089362,
+            "mapId": "cryo_relay",
+            "mode": "control_core",
+            "won": false,
+            "kills": 11,
+            "deaths": 10,
+            "accuracy": 41,
+            "mmrDelta": -14,
+            "xpEarned": 120
+          }
+        ]
+      }
+    },
+    "op_rm2lgyf": {
+      "id": "op_rm2lgyf",
+      "callsign": "Prism-LGYF",
+      "platform": "pc",
+      "crossplayEnabled": true,
+      "loadout": {
+        "robotClass": "s1_striker",
+        "weaponId": "pulse_carbine",
+        "gadgetId": "phase_dash",
+        "beamColorId": "beam_cyan",
+        "skinId": "skin_graphite",
+        "emblemId": "emblem_prism"
+      },
+      "controller": {
+        "mouseSensitivity": 1,
+        "adsMultiplier": 0.55,
+        "fov": 74,
+        "invertY": false,
+        "crosshairStyle": "precision",
+        "gamepadEnabled": true,
+        "leftStickDeadzone": 0.15,
+        "rightStickDeadzone": 0.12,
+        "gamepadSensitivity": 2.6,
+        "triggerThreshold": 0.25,
+        "vibrationEnabled": true,
+        "bindings": {
+          "fire": "Mouse0 / RT",
+          "ads": "Mouse2 / LT",
+          "dash": "Shift / B",
+          "gadget": "Q / RB",
+          "classSkill": "E / Y",
+          "buyAmmo": "B / DPadUp",
+          "reload": "R / X",
+          "voicePtt": "V / LB"
+        }
+      },
+      "stats": {
+        "matchesPlayed": 12,
+        "wins": 7,
+        "losses": 5,
+        "kills": 138,
+        "deaths": 94,
+        "assists": 41,
+        "shotsFired": 1840,
+        "shotsHit": 792,
+        "damageDealt": 19450,
+        "hazardKills": 9,
+        "barriersDestroyed": 27,
+        "mmr": 1285,
+        "xp": 620,
+        "credits": 1450,
+        "weaponStats": {
+          "pulse_carbine": {
+            "kills": 84,
+            "shotsFired": 1320,
+            "shotsHit": 540,
+            "damageDealt": 11200
+          },
+          "prism_railgun": {
+            "kills": 36,
+            "shotsFired": 220,
+            "shotsHit": 122,
+            "damageDealt": 5850
+          },
+          "scatter_projector": {
+            "kills": 18,
+            "shotsFired": 300,
+            "shotsHit": 130,
+            "damageDealt": 2400
+          }
+        },
+        "recentMatches": [
+          {
+            "id": "seed_m1",
+            "timestamp": 1795219320392,
+            "mapId": "reactor_foundry",
+            "mode": "team_clash",
+            "won": true,
+            "kills": 14,
+            "deaths": 7,
+            "accuracy": 46,
+            "mmrDelta": 22,
+            "xpEarned": 185
+          },
+          {
+            "id": "seed_m2",
+            "timestamp": 1795230120392,
             "mapId": "cryo_relay",
             "mode": "control_core",
             "won": false,
@@ -5641,6 +6653,326 @@
       }
     ],
     "op_ujkd3gb": [
+      {
+        "id": "fr_kaelen",
+        "callsign": "Kaelen-7",
+        "platform": "console",
+        "status": "in_lobby",
+        "mmr": 1310,
+        "roomId": "PUBLIC-ALPHA"
+      },
+      {
+        "id": "fr_nyx",
+        "callsign": "NyxVector",
+        "platform": "pc",
+        "status": "online",
+        "mmr": 1445
+      },
+      {
+        "id": "fr_solaris",
+        "callsign": "SolarisCloud",
+        "platform": "cloud",
+        "status": "in_match",
+        "mmr": 1240,
+        "roomId": "PUBLIC-ALPHA"
+      },
+      {
+        "id": "fr_orion",
+        "callsign": "OrionIX",
+        "platform": "pc",
+        "status": "offline",
+        "mmr": 1190
+      }
+    ],
+    "op_i59u19s": [
+      {
+        "id": "fr_kaelen",
+        "callsign": "Kaelen-7",
+        "platform": "console",
+        "status": "in_lobby",
+        "mmr": 1310,
+        "roomId": "PUBLIC-ALPHA"
+      },
+      {
+        "id": "fr_nyx",
+        "callsign": "NyxVector",
+        "platform": "pc",
+        "status": "online",
+        "mmr": 1445
+      },
+      {
+        "id": "fr_solaris",
+        "callsign": "SolarisCloud",
+        "platform": "cloud",
+        "status": "in_match",
+        "mmr": 1240,
+        "roomId": "PUBLIC-ALPHA"
+      },
+      {
+        "id": "fr_orion",
+        "callsign": "OrionIX",
+        "platform": "pc",
+        "status": "offline",
+        "mmr": 1190
+      }
+    ],
+    "op_tz3q95p": [
+      {
+        "id": "fr_kaelen",
+        "callsign": "Kaelen-7",
+        "platform": "console",
+        "status": "in_lobby",
+        "mmr": 1310,
+        "roomId": "PUBLIC-ALPHA"
+      },
+      {
+        "id": "fr_nyx",
+        "callsign": "NyxVector",
+        "platform": "pc",
+        "status": "online",
+        "mmr": 1445
+      },
+      {
+        "id": "fr_solaris",
+        "callsign": "SolarisCloud",
+        "platform": "cloud",
+        "status": "in_match",
+        "mmr": 1240,
+        "roomId": "PUBLIC-ALPHA"
+      },
+      {
+        "id": "fr_orion",
+        "callsign": "OrionIX",
+        "platform": "pc",
+        "status": "offline",
+        "mmr": 1190
+      }
+    ],
+    "op_uyhse2q": [
+      {
+        "id": "fr_kaelen",
+        "callsign": "Kaelen-7",
+        "platform": "console",
+        "status": "in_lobby",
+        "mmr": 1310,
+        "roomId": "PUBLIC-ALPHA"
+      },
+      {
+        "id": "fr_nyx",
+        "callsign": "NyxVector",
+        "platform": "pc",
+        "status": "online",
+        "mmr": 1445
+      },
+      {
+        "id": "fr_solaris",
+        "callsign": "SolarisCloud",
+        "platform": "cloud",
+        "status": "in_match",
+        "mmr": 1240,
+        "roomId": "PUBLIC-ALPHA"
+      },
+      {
+        "id": "fr_orion",
+        "callsign": "OrionIX",
+        "platform": "pc",
+        "status": "offline",
+        "mmr": 1190
+      }
+    ],
+    "op_ke7xaj5": [
+      {
+        "id": "fr_kaelen",
+        "callsign": "Kaelen-7",
+        "platform": "console",
+        "status": "in_lobby",
+        "mmr": 1310,
+        "roomId": "PUBLIC-ALPHA"
+      },
+      {
+        "id": "fr_nyx",
+        "callsign": "NyxVector",
+        "platform": "pc",
+        "status": "online",
+        "mmr": 1445
+      },
+      {
+        "id": "fr_solaris",
+        "callsign": "SolarisCloud",
+        "platform": "cloud",
+        "status": "in_match",
+        "mmr": 1240,
+        "roomId": "PUBLIC-ALPHA"
+      },
+      {
+        "id": "fr_orion",
+        "callsign": "OrionIX",
+        "platform": "pc",
+        "status": "offline",
+        "mmr": 1190
+      }
+    ],
+    "op_fn9s9k1": [
+      {
+        "id": "fr_kaelen",
+        "callsign": "Kaelen-7",
+        "platform": "console",
+        "status": "in_lobby",
+        "mmr": 1310,
+        "roomId": "PUBLIC-ALPHA"
+      },
+      {
+        "id": "fr_nyx",
+        "callsign": "NyxVector",
+        "platform": "pc",
+        "status": "online",
+        "mmr": 1445
+      },
+      {
+        "id": "fr_solaris",
+        "callsign": "SolarisCloud",
+        "platform": "cloud",
+        "status": "in_match",
+        "mmr": 1240,
+        "roomId": "PUBLIC-ALPHA"
+      },
+      {
+        "id": "fr_orion",
+        "callsign": "OrionIX",
+        "platform": "pc",
+        "status": "offline",
+        "mmr": 1190
+      }
+    ],
+    "op_jd3cxmj": [
+      {
+        "id": "fr_kaelen",
+        "callsign": "Kaelen-7",
+        "platform": "console",
+        "status": "in_lobby",
+        "mmr": 1310,
+        "roomId": "PUBLIC-ALPHA"
+      },
+      {
+        "id": "fr_nyx",
+        "callsign": "NyxVector",
+        "platform": "pc",
+        "status": "online",
+        "mmr": 1445
+      },
+      {
+        "id": "fr_solaris",
+        "callsign": "SolarisCloud",
+        "platform": "cloud",
+        "status": "in_match",
+        "mmr": 1240,
+        "roomId": "PUBLIC-ALPHA"
+      },
+      {
+        "id": "fr_orion",
+        "callsign": "OrionIX",
+        "platform": "pc",
+        "status": "offline",
+        "mmr": 1190
+      }
+    ],
+    "op_dz4huic": [
+      {
+        "id": "fr_kaelen",
+        "callsign": "Kaelen-7",
+        "platform": "console",
+        "status": "in_lobby",
+        "mmr": 1310,
+        "roomId": "PUBLIC-ALPHA"
+      },
+      {
+        "id": "fr_nyx",
+        "callsign": "NyxVector",
+        "platform": "pc",
+        "status": "online",
+        "mmr": 1445
+      },
+      {
+        "id": "fr_solaris",
+        "callsign": "SolarisCloud",
+        "platform": "cloud",
+        "status": "in_match",
+        "mmr": 1240,
+        "roomId": "PUBLIC-ALPHA"
+      },
+      {
+        "id": "fr_orion",
+        "callsign": "OrionIX",
+        "platform": "pc",
+        "status": "offline",
+        "mmr": 1190
+      }
+    ],
+    "op_mudrt7d": [
+      {
+        "id": "fr_kaelen",
+        "callsign": "Kaelen-7",
+        "platform": "console",
+        "status": "in_lobby",
+        "mmr": 1310,
+        "roomId": "PUBLIC-ALPHA"
+      },
+      {
+        "id": "fr_nyx",
+        "callsign": "NyxVector",
+        "platform": "pc",
+        "status": "online",
+        "mmr": 1445
+      },
+      {
+        "id": "fr_solaris",
+        "callsign": "SolarisCloud",
+        "platform": "cloud",
+        "status": "in_match",
+        "mmr": 1240,
+        "roomId": "PUBLIC-ALPHA"
+      },
+      {
+        "id": "fr_orion",
+        "callsign": "OrionIX",
+        "platform": "pc",
+        "status": "offline",
+        "mmr": 1190
+      }
+    ],
+    "op_iovu5wa": [
+      {
+        "id": "fr_kaelen",
+        "callsign": "Kaelen-7",
+        "platform": "console",
+        "status": "in_lobby",
+        "mmr": 1310,
+        "roomId": "PUBLIC-ALPHA"
+      },
+      {
+        "id": "fr_nyx",
+        "callsign": "NyxVector",
+        "platform": "pc",
+        "status": "online",
+        "mmr": 1445
+      },
+      {
+        "id": "fr_solaris",
+        "callsign": "SolarisCloud",
+        "platform": "cloud",
+        "status": "in_match",
+        "mmr": 1240,
+        "roomId": "PUBLIC-ALPHA"
+      },
+      {
+        "id": "fr_orion",
+        "callsign": "OrionIX",
+        "platform": "pc",
+        "status": "offline",
+        "mmr": 1190
+      }
+    ],
+    "op_rm2lgyf": [
       {
         "id": "fr_kaelen",
         "callsign": "Kaelen-7",

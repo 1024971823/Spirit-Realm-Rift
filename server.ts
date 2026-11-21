@@ -1531,6 +1531,7 @@ async function startServer() {
             p.ammo = Math.min(mag, p.stashedCombatAmmo ?? mag);
           }
         }
+        broadcastToRoom(room, 'match:state', serializeRoomSnapshot(room));
       }
     }
 

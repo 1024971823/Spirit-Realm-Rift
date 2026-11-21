@@ -4,10 +4,36 @@ class SoundEngine {
   private ctx: AudioContext | null = null;
   private muted = false;
   private masterGain: GainNode | null = null;
+  private userUnlocked = false;
+  private unlockBound = false;
+
+  private bindUnlockListeners(): void {
+    if (this.unlockBound || typeof window === 'undefined') return;
+    this.unlockBound = true;
+    const unlock = () => {
+      this.userUnlocked = true;
+      if (this.ctx && this.ctx.state === 'suspended') {
+        this.ctx.resume().catch(() => {});
+      }
+      window.removeEventListener('pointerdown', unlock, true);
+      window.removeEventListener('keydown', unlock, true);
+      window.removeEventListener('touchstart', unlock, true);
+    };
+    window.addEventListener('pointerdown', unlock, { capture: true, passive: true });
+    window.addEventListener('keydown', unlock, { capture: true, passive: true });
+    window.addEventListener('touchstart', unlock, { capture: true, passive: true });
+  }
 
   private ensureContext(): AudioContext | null {
     if (this.muted) return null;
     if (typeof window === 'undefined') return null;
+    this.bindUnlockListeners();
+
+    const navActivation = (navigator as Navigator & { userActivation?: { hasBeenActive: boolean } }).userActivation;
+    if (!this.userUnlocked && navActivation && !navActivation.hasBeenActive) {
+      return null;
+    }
+
     if (!this.ctx) {
       const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
       if (!AudioCtx) return null;
