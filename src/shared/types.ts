@@ -257,6 +257,7 @@ export interface MatchHistoryRecord {
   mapId: MapId;
   mode: GameModeId;
   won: boolean;
+  draw?: boolean;
   kills: number;
   deaths: number;
   accuracy: number;
@@ -358,6 +359,14 @@ export interface CombatantSnapshot {
   miningNodeId: string | null;
   slowedUntil: number;
   speaking: boolean;
+  lastProcessedInputSeq?: number;
+  grounded?: boolean;
+  dashCooldown?: number;
+  dashRemaining?: number;
+  heat?: number;
+  overheated?: boolean;
+  gadgetCooldown?: number;
+  classSkillCooldown?: number;
 }
 
 export interface KillFeedEvent {
@@ -394,6 +403,9 @@ export interface AntiCheatAudit {
 
 export interface MatchSnapshot {
   roomId: string;
+  matchId?: string;
+  serverTick?: number;
+  serverTimeMs?: number;
   isPrivate?: boolean;
   mapId: MapId;
   mode: GameModeId;

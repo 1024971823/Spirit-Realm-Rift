@@ -37,7 +37,7 @@ export default defineConfig(() => {
             groups: [
               {
                 name: 'vendor-three',
-                test: /[\\/]node_modules[\\/](three|urdf-loader)[\\/]/,
+                test: /[\\/]node_modules[\\/](three)[\\/]/,
                 priority: 20,
               },
               {
@@ -60,9 +60,6 @@ export default defineConfig(() => {
       include: [
         'three',
         'three/addons/environments/RoomEnvironment.js',
-        'three/addons/loaders/ColladaLoader.js',
-        'three/addons/loaders/STLLoader.js',
-        'urdf-loader',
       ],
     },
     server: {

@@ -1,0 +1,58 @@
+services:
+  db:
+    image: postgres:18
+    environment:
+      POSTGRES_USER: prism
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-prism-local}
+      POSTGRES_DB: prism
+    volumes:
+      - db:/var/lib/postgresql
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U prism -d prism']
+      interval: 3s
+      timeout: 3s
+      retries: 15
+  redis:
+    image: redis:8
+    command: [redis-server, --appendonly, 'yes']
+    volumes:
+      - redis:/data
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 3s
+      timeout: 3s
+      retries: 15
+  game:
+    build: .
+    init: true
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - '127.0.0.1:3000:3000'
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://prism:${POSTGRES_PASSWORD:-prism-local}@db:5432/prism
+      REDIS_URL: redis://redis:6379
+      TRUST_PROXY: '1'
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:3000/api/health').then(r => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    profiles: [monitoring]
+    ports:
+      - '127.0.0.1:9090:9090'
+    volumes:
+      - ./ops/prometheus.yaml:/etc/prometheus/prometheus.yml:ro
+      - ./ops/alerts.yaml:/etc/prometheus/alerts.yaml:ro
+      - prometheus:/prometheus
+volumes:
+  db:
+  redis:
+  prometheus:

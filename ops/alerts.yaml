@@ -1,0 +1,23 @@
+groups:
+  - name: prism
+    rules:
+      - alert: PrismGatewayUnavailable
+        expr: up{job="prism"} == 0 or prism_dependencies_ready == 0
+        for: 1m
+        labels: { severity: critical }
+        annotations: { summary: 'The gateway or a required datastore is unreachable.' }
+      - alert: PrismGameWorkerLost
+        expr: prism_workers_ready < prism_workers_configured or increase(prism_worker_failures_total[5m]) > 0
+        for: 30s
+        labels: { severity: critical }
+        annotations: { summary: 'A game worker exited or has not reported ready.' }
+      - alert: PrismTickBudget
+        expr: prism_worker_tick_p99_seconds > 0.045
+        for: 2m
+        labels: { severity: warning }
+        annotations: { summary: 'A game worker P99 is approaching the 50 ms tick budget.' }
+      - alert: PrismSettlementFailure
+        expr: increase(prism_settlement_failures_total[5m]) > 0
+        for: 30s
+        labels: { severity: critical }
+        annotations: { summary: 'A match settlement transaction failed.' }

@@ -2,7 +2,6 @@ import * as THREE from 'three';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { soundEngine } from '../audio/soundEngine';
 import type { EconomyNoticePayload, GameNetworkClient } from '../net/clientSocket';
-import { BASE_RUN_SPEED, CRYO_SLOW_MULT, DASH_SPEED_MULT } from '../shared/anticheat';
 import {
   AMMO_PACKS,
   canRobotClassFire,
@@ -17,16 +16,19 @@ import {
 } from '../shared/catalog';
 import {
   buildMapPropColliders,
-  clampMuzzleOriginToBody,
   getActiveColliders,
   normalizeAngle,
   ORE_MINE_RADIUS,
-  PLAYER_EYE_HEIGHT,
-  rayIntersectAabb,
-  rayIntersectRobot,
-  resolvePlayerMovement,
-  rotateTowardsAngle,
 } from '../shared/physics';
+import {
+  computePlayerCamera,
+  MOVEMENT_STEP_SEC,
+  playerMotionFromSnapshot,
+  stepPlayerMotion,
+  type MovementContext,
+  type PlayerInput,
+  type PlayerMotion,
+} from '../shared/playerInput';
 import type {
   AabbCollider,
   AmmoPackId,
@@ -62,10 +64,9 @@ import { createArenaTextures, type ProceduralTextureSet } from './textures';
 const _vec3A = new THREE.Vector3();
 const _vec3B = new THREE.Vector3();
 const _vec3C = new THREE.Vector3();
-const _vec3D = new THREE.Vector3();
 const _mat4 = new THREE.Matrix4();
 const _quat = new THREE.Quaternion();
-const _euler = new THREE.Euler(0, 0, 0, 'YXZ');
+const VENT_COOLDOWN_MS = 1600;
 
 export interface NearbyOreHudInfo {
   id: string;
@@ -140,8 +141,11 @@ interface RemoteActor {
   skinHex: string;
   beamHex: string;
   rig: RoboMasterCombatantRig;
+  previousPos: THREE.Vector3;
   targetPos: THREE.Vector3;
-  vel: THREE.Vector3;
+  previousChassisYaw: number;
+  previousAimYaw: number;
+  previousPitch: number;
   targetChassisYaw: number;
   targetAimYaw: number;
   targetPitch: number;
@@ -181,7 +185,6 @@ export class LaserTagEngine {
   private localRobotRig: RoboMasterCombatantRig | null = null;
   private localRigMeta: { robotClass: RobotClass; team: TeamId; skinHex: string; beamHex: string } | null = null;
   private localChassisYaw = -Math.PI / 2;
-  private currentCamDist = 4.55;
 
   private remoteActors = new Map<string, RemoteActor>();
 
@@ -200,21 +203,27 @@ export class LaserTagEngine {
   private latestSnapshot: MatchSnapshot | null = null;
   private loadout: LoadoutConfig;
   private controller: ControllerConfig;
-  private pendingRobotClassUntil = 0;
 
   private playerPos = new THREE.Vector3(-42, 0, 0);
-  private playerVel = new THREE.Vector3(0, 0, 0);
+  private predictedMotion: PlayerMotion | null = null;
+  private pendingInputs: PlayerInput[] = [];
+  private nextInputSeq = 1;
+  private nextActionSeq = 1;
+  private activeMatchId: string | undefined;
+  private latestServerTick = -1;
+  private inputClock = 0;
+  private wantsDash = false;
   private yaw = -Math.PI / 2;
   private pitch = -0.04;
   private targetYaw = -Math.PI / 2;
   private targetPitch = -0.04;
   private pendingLookDx = 0;
   private pendingLookDy = 0;
-  private grounded = true;
 
   private heat = 0;
   private overheated = false;
   private lastShotMs = 0;
+  private lastVentMs = -VENT_COOLDOWN_MS;
   private lastNoAmmoCueMs = 0;
   private lastMineSentMs = 0;
   private lastMineSparkMs = 0;
@@ -229,7 +238,6 @@ export class LaserTagEngine {
   private economyAlertUntil = 0;
   private lang: Language = 'zh';
 
-  private walkDistance = 0;
   private trauma = 0;
   private hitstopTimer = 0;
   private hitmarkerTimer = 0;
@@ -243,6 +251,7 @@ export class LaserTagEngine {
   private keys = new Set<string>();
   private mouseDown = false;
   private adsActive = false;
+  private gamepadAds = false;
   private draggingLook = false;
   private lastPointerX = 0;
   private lastPointerY = 0;
@@ -259,7 +268,6 @@ export class LaserTagEngine {
 
   private frameId = 0;
   private lastFrameTime = performance.now();
-  private lastNetMoveSent = 0;
   private lastHudPush = 0;
   private titleOrbitAngle = 0.4;
   private envRenderTarget: THREE.WebGLRenderTarget | null = null;
@@ -391,17 +399,22 @@ export class LaserTagEngine {
 
   setPhase(phase: GamePhase): void {
     const prev = this.phase;
+    if (prev === phase) return;
     this.phase = phase;
     this.keys.clear();
     this.mouseDown = false;
     this.adsActive = false;
+    this.gamepadAds = false;
+    this.wantsDash = false;
+    this.inputClock = 0;
 
     if (phase === 'playing') {
       if (prev === 'title') {
         this.syncSpawnFromSnapshot();
       }
-    } else if (document.pointerLockElement === this.renderer.domElement) {
-      document.exitPointerLock?.();
+    } else {
+      if (prev === 'playing' && phase === 'paused') this.sendMovementInput(0, 0);
+      if (document.pointerLockElement === this.renderer.domElement) document.exitPointerLock?.();
     }
     this.ensureLocalRobotRig();
   }
@@ -414,10 +427,18 @@ export class LaserTagEngine {
     this.classSkillCooldown = 0;
     this.dashTimer = 0;
     this.localOverclockUntil = 0;
-    this.currentCamDist = 4.55;
-    this.playerVel.set(0, 0, 0);
+    this.lastShotMs = 0;
+    this.lastVentMs = -VENT_COOLDOWN_MS;
+    this.lastMineSentMs = 0;
     this.prevHpTotal = 150;
     this.prevLocalAlive = true;
+    this.pendingInputs = [];
+    this.nextActionSeq = 1;
+    this.activeMatchId = snap.matchId;
+    this.latestServerTick = -1;
+    this.nextInputSeq = (snap.players.find((p) => p.id === this.localPlayerId)?.lastProcessedInputSeq ?? 0) + 1;
+    this.inputClock = 0;
+    this.wantsDash = false;
     this.applySnapshot(snap);
     this.syncSpawnFromSnapshot();
   }
@@ -437,27 +458,6 @@ export class LaserTagEngine {
       safeLoadout.beamColorId !== this.loadout.beamColorId;
     this.loadout = safeLoadout;
     this.controller = safeController;
-    if (classChanged) {
-      this.pendingRobotClassUntil = performance.now() + 2000;
-      const me = this.latestSnapshot?.players.find((p) => p.id === this.localPlayerId);
-      if (me) {
-        const classSpec = ROBOT_CLASSES[safeLoadout.robotClass] || ROBOT_CLASSES.s1_striker;
-        const mag = canRobotClassFire(safeLoadout.robotClass)
-          ? (WEAPONS[safeLoadout.weaponId]?.magSize ?? 30)
-          : 0;
-        me.robotClass = safeLoadout.robotClass;
-        me.maxHp = classSpec.maxHp;
-        me.hp = Math.min(classSpec.maxHp, me.hp);
-        me.maxShield = classSpec.maxShield;
-        me.shield = Math.min(classSpec.maxShield, me.shield);
-        me.maxAmmo = mag;
-        if (!canRobotClassFire(safeLoadout.robotClass)) {
-          me.ammo = 0;
-        } else if (me.ammo === 0) {
-          me.ammo = mag;
-        }
-      }
-    }
     if (this.camera.fov !== safeController.fov && !this.adsActive) {
       this.camera.fov = safeController.fov;
       this.camera.updateProjectionMatrix();
@@ -478,25 +478,26 @@ export class LaserTagEngine {
 
   buyAmmoPack(packId: AmmoPackId): void {
     if (this.phase !== 'playing') return;
-    if (!canRobotClassFire(this.loadout.robotClass) && (packId === 'light_mag' || packId === 'full_mag')) {
+    const me = this.latestSnapshot?.players.find((p) => p.id === this.localPlayerId);
+    if (!canRobotClassFire(this.getEffectiveLocalRobotClass(me)) && (packId === 'light_mag' || packId === 'full_mag')) {
       this.setEconomyAlert('ep_unarmed_credits');
       return;
     }
-    this.network.buyAmmo(packId);
+    this.sendAction('player:buy_ammo', { packId });
   }
 
   smartBuyAmmo(): void {
     if (this.phase !== 'playing') return;
-    if (!canRobotClassFire(this.loadout.robotClass)) {
+    const me = this.latestSnapshot?.players.find((p) => p.id === this.localPlayerId);
+    if (!canRobotClassFire(this.getEffectiveLocalRobotClass(me))) {
       this.setEconomyAlert('ep_unarmed_credits');
       return;
     }
-    const me = this.latestSnapshot?.players.find((p) => p.id === this.localPlayerId);
     const credits = this.getLocalTeamCredits(me?.team);
     if (credits >= AMMO_PACKS.full_mag.cost) {
-      this.network.buyAmmo('full_mag');
+      this.buyAmmoPack('full_mag');
     } else if (credits >= AMMO_PACKS.light_mag.cost) {
-      this.network.buyAmmo('light_mag');
+      this.buyAmmoPack('light_mag');
     } else {
       this.setEconomyAlert('insufficient_credits');
       soundEngine.playHazardTelegraph();
@@ -545,14 +546,7 @@ export class LaserTagEngine {
   }
 
   private getEffectiveLocalRobotClass(me?: CombatantSnapshot): RobotClass {
-    if (me?.robotClass === this.loadout.robotClass) {
-      this.pendingRobotClassUntil = 0;
-      return me.robotClass;
-    }
-    if (performance.now() < this.pendingRobotClassUntil) {
-      return this.loadout.robotClass;
-    }
-    return me?.robotClass ?? this.loadout.robotClass ?? 's1_striker';
+    return (this.phase === 'title' ? undefined : me?.robotClass) ?? this.loadout.robotClass;
   }
 
   private ensureLocalRobotRig(): void {
@@ -602,6 +596,17 @@ export class LaserTagEngine {
   }
 
   applySnapshot(snap: MatchSnapshot): void {
+    if (snap.matchId && this.activeMatchId !== snap.matchId) {
+      this.activeMatchId = snap.matchId;
+      this.latestServerTick = -1;
+      this.pendingInputs = [];
+      this.nextInputSeq = 1;
+      this.nextActionSeq = 1;
+    }
+    if (snap.matchId && snap.serverTick !== undefined) {
+      if (snap.serverTick < this.latestServerTick) return;
+      this.latestServerTick = snap.serverTick;
+    }
     this.latestSnapshot = snap;
     if (snap.mapId !== this.currentMapId) {
       this.buildArena(snap.mapId);
@@ -682,24 +687,30 @@ export class LaserTagEngine {
         }
         this.prevHpTotal = total;
 
-        // Detect authoritative respawn transition (dead -> alive) and snap cleanly
-        if (!this.prevLocalAlive && p.alive) {
-          this.playerPos.set(p.x, p.y, p.z);
-          this.yaw = p.yaw;
-          this.targetYaw = p.yaw;
-          this.localChassisYaw = p.chassisYaw ?? p.yaw;
-          this.pitch = -0.04;
-          this.targetPitch = -0.04;
-          this.pendingLookDx = 0;
-          this.pendingLookDy = 0;
-          this.playerVel.set(0, 0, 0);
-          this.heat = 0;
-          this.overheated = false;
-        }
+        const respawned = !this.prevLocalAlive && p.alive;
         this.prevLocalAlive = p.alive;
+        const acknowledged = p.lastProcessedInputSeq ?? 0;
+        this.nextInputSeq = Math.max(this.nextInputSeq, acknowledged + 1);
+        this.pendingInputs = !p.alive || respawned ? [] : this.pendingInputs.filter((input) => input.seq > acknowledged);
+        let predicted = playerMotionFromSnapshot(p);
+        const context = this.getMovementContext(p, snap);
+        for (const input of this.pendingInputs) predicted = stepPlayerMotion(predicted, input, context);
+        this.predictedMotion = predicted;
+        this.dashTimer = predicted.dashRemaining;
+        this.dashCooldown = predicted.dashCooldown;
+        this.heat = p.heat ?? this.heat;
+        this.overheated = p.overheated ?? this.overheated;
+        this.gadgetCooldown = p.gadgetCooldown ?? this.gadgetCooldown;
+        this.classSkillCooldown = p.classSkillCooldown ?? this.classSkillCooldown;
 
-        if (!p.alive && this.phase === 'playing') {
-          this.playerVel.set(0, 0, 0);
+        if (respawned || !p.alive || this.phase !== 'playing') {
+          this.playerPos.set(p.x, p.y, p.z);
+          this.localChassisYaw = predicted.chassisYaw;
+        }
+        if (respawned) {
+          this.yaw = this.targetYaw = p.yaw;
+          this.pitch = this.targetPitch = p.pitch;
+          this.pendingLookDx = this.pendingLookDy = 0;
         }
         continue;
       }
@@ -739,8 +750,11 @@ export class LaserTagEngine {
           skinHex: p.skinHex,
           beamHex: p.beamHex,
           rig,
+          previousPos: new THREE.Vector3(p.x, p.y, p.z),
           targetPos: new THREE.Vector3(p.x, p.y, p.z),
-          vel: new THREE.Vector3(p.vx, p.vy, p.vz),
+          previousChassisYaw: initChassis,
+          previousAimYaw: p.yaw,
+          previousPitch: p.pitch,
           targetChassisYaw: initChassis,
           targetAimYaw: p.yaw,
           targetPitch: p.pitch,
@@ -756,8 +770,11 @@ export class LaserTagEngine {
       }
 
       const prevAlive = actor.rig.root.visible;
+      actor.previousPos.copy(actor.rig.root.position);
+      actor.previousChassisYaw = actor.chassisYaw;
+      actor.previousAimYaw = actor.aimYaw;
+      actor.previousPitch = actor.aimPitch;
       actor.targetPos.set(p.x, p.y, p.z);
-      actor.vel.set(p.vx, p.vy, p.vz);
       actor.targetChassisYaw = p.chassisYaw ?? p.yaw;
       actor.targetAimYaw = p.yaw;
       actor.targetPitch = p.pitch;
@@ -769,10 +786,15 @@ export class LaserTagEngine {
       actor.rig.shieldDome.visible = p.shieldActive;
 
       // Snap position cleanly when respawning so robot doesn't slide from death spot
-      if (!prevAlive && p.alive) {
+      if ((!prevAlive && p.alive) || actor.previousPos.distanceTo(actor.targetPos) > 8.5) {
         actor.rig.root.position.set(p.x, p.y, p.z);
+        actor.previousPos.copy(actor.targetPos);
         actor.chassisYaw = actor.targetChassisYaw;
         actor.aimYaw = actor.targetAimYaw;
+        actor.aimPitch = actor.targetPitch;
+        actor.previousChassisYaw = actor.targetChassisYaw;
+        actor.previousAimYaw = actor.targetAimYaw;
+        actor.previousPitch = actor.targetPitch;
         actor.rig.root.rotation.y = actor.chassisYaw;
       }
     }
@@ -850,16 +872,6 @@ export class LaserTagEngine {
     }
   }
 
-  applyServerCorrection(pos: Vec3): void {
-    _vec3A.set(pos.x, pos.y, pos.z);
-    const dist = this.playerPos.distanceTo(_vec3A);
-    if (dist < 3.2) {
-      this.playerPos.lerp(_vec3A, 0.35);
-    } else {
-      this.playerPos.copy(_vec3A);
-    }
-  }
-
   requestPointerLock(): void {
     if (this.phase === 'playing' && document.pointerLockElement !== this.renderer.domElement) {
       try {
@@ -880,8 +892,8 @@ export class LaserTagEngine {
       this.yaw = me.yaw;
       this.targetYaw = me.yaw;
       this.localChassisYaw = me.chassisYaw ?? me.yaw;
-      this.pitch = -0.04;
-      this.targetPitch = -0.04;
+      this.pitch = this.targetPitch = me.pitch;
+      this.predictedMotion = playerMotionFromSnapshot(me);
     } else {
       const sp = MAPS[this.currentMapId].spawns[0];
       this.playerPos.set(sp.x, sp.y, sp.z);
@@ -890,11 +902,53 @@ export class LaserTagEngine {
       this.localChassisYaw = sp.yaw;
       this.pitch = -0.04;
       this.targetPitch = -0.04;
+      this.predictedMotion = null;
     }
     this.pendingLookDx = 0;
     this.pendingLookDy = 0;
-    this.playerVel.set(0, 0, 0);
     this.ensureLocalRobotRig();
+  }
+
+  private getMovementContext(me: CombatantSnapshot, snapshot: MatchSnapshot): MovementContext {
+    this.otherRobotScratch.length = 0;
+    for (const other of snapshot.players) {
+      if (other.alive && other.id !== me.id) this.otherRobotScratch.push(other);
+    }
+    return {
+      colliders: this.getActiveCollidersCached(),
+      halfSize: MAPS[snapshot.mapId].halfSize,
+      otherRobots: this.otherRobotScratch,
+      speedMult: ROBOT_CLASSES[me.robotClass].speedMult,
+      slowed: me.slowedUntil > (snapshot.serverTimeMs ?? Date.now()),
+      lastAimYaw: me.yaw,
+    };
+  }
+
+  private sendMovementInput(moveX: number, moveZ: number): void {
+    const snapshot = this.latestSnapshot;
+    const matchId = snapshot?.matchId;
+    const me = snapshot?.players.find((p) => p.id === this.localPlayerId);
+    if (!matchId || snapshot?.phase !== 'active' || !me?.alive || !this.predictedMotion) return;
+
+    const input: PlayerInput = {
+      matchId, seq: this.nextInputSeq, moveX, moveZ,
+      yaw: this.yaw, pitch: this.pitch, ads: this.adsActive || this.gamepadAds,
+      dash: this.wantsDash,
+    };
+    if (this.pendingInputs.length >= 16 || !this.network.send('player:input', input)) return;
+    this.nextInputSeq++;
+    this.wantsDash = false;
+    this.predictedMotion = stepPlayerMotion(this.predictedMotion, input, this.getMovementContext(me, snapshot));
+    this.pendingInputs.push(input);
+    this.dashTimer = this.predictedMotion.dashRemaining;
+    this.dashCooldown = this.predictedMotion.dashCooldown;
+  }
+
+  private sendAction(type: string, extra: Record<string, unknown> = {}): boolean {
+    const matchId = this.latestSnapshot?.matchId;
+    if (this.phase !== 'playing' || !matchId || this.latestSnapshot?.phase !== 'active' ||
+        !this.latestSnapshot.players.some((p) => p.id === this.localPlayerId && p.alive)) return false;
+    return this.network.send(type, { ...extra, matchId, actionSeq: this.nextActionSeq++ });
   }
 
   private getActiveCollidersCached(): AabbCollider[] {
@@ -1271,59 +1325,14 @@ export class LaserTagEngine {
     }
   }
 
-  private computeCrosshairTargetPoint(maxRange: number): Vec3 {
-    const colliders = this.getActiveCollidersCached();
-
-    _euler.set(this.pitch, this.yaw, 0, 'YXZ');
-    _vec3A.set(0, 0, -1).applyEuler(_euler).normalize();
-    const camOrig = {
-      x: this.camera.position.x,
-      y: this.camera.position.y,
-      z: this.camera.position.z,
-    };
-    const camDir = { x: _vec3A.x, y: _vec3A.y, z: _vec3A.z };
-
-    // Offset minimum distance slightly past our own robot chassis so camera ray never aims behind robot
-    let bestT = maxRange;
-    for (const c of colliders) {
-      const t = rayIntersectAabb(camOrig, camDir, c, bestT);
-      if (t !== null && t > 1.5 && t < bestT) bestT = t;
-    }
-    if (this.latestSnapshot) {
-      for (const other of this.latestSnapshot.players) {
-        if (!other.alive || other.id === this.localPlayerId) continue;
-        const hit = rayIntersectRobot(
-          camOrig,
-          camDir,
-          {
-            x: other.x,
-            y: other.y,
-            z: other.z,
-            chassisYaw: other.chassisYaw ?? other.yaw,
-            aimYaw: other.yaw,
-            robotClass: other.robotClass,
-          },
-          bestT,
-        );
-        if (hit !== null && hit.dist > 1.5 && hit.dist < bestT) bestT = hit.dist;
-      }
-    }
-
-    return {
-      x: camOrig.x + camDir.x * bestT,
-      y: Math.max(0.1, camOrig.y + camDir.y * bestT),
-      z: camOrig.z + camDir.z * bestT,
-    };
-  }
-
   private tryFireWeapon(): void {
     if (this.phase !== 'playing' || this.overheated) return;
     const me = this.latestSnapshot?.players.find((p) => p.id === this.localPlayerId);
     if (me && !me.alive) return;
 
     const now = performance.now();
-    const activeClass = me?.robotClass ?? this.loadout.robotClass;
-    if (!canRobotClassFire(activeClass) || !canRobotClassFire(this.loadout.robotClass)) {
+    const activeClass = this.getEffectiveLocalRobotClass(me);
+    if (!canRobotClassFire(activeClass)) {
       if (now - this.lastNoAmmoCueMs > 1400) {
         this.lastNoAmmoCueMs = now;
         this.setEconomyAlert(this.nearbyOreNode ? 'ep_unarmed_mine' : 'ep_unarmed_harvest');
@@ -1340,9 +1349,10 @@ export class LaserTagEngine {
       return;
     }
 
-    const weapon = WEAPONS[this.loadout.weaponId] || WEAPONS.pulse_carbine;
+    const weapon = WEAPONS[me?.weaponId ?? this.loadout.weaponId] || WEAPONS.pulse_carbine;
     const overclockMult = this.isLocalOverclocked(me) ? 0.65 : 1.0;
     if (now - this.lastShotMs < weapon.fireIntervalMs * overclockMult) return;
+    if (!this.sendAction('player:fire', { yaw: this.yaw, pitch: this.pitch, ads: this.adsActive || this.gamepadAds })) return;
     this.lastShotMs = now;
 
     this.heat = Math.min(100, this.heat + weapon.heatPerShot);
@@ -1353,112 +1363,31 @@ export class LaserTagEngine {
     this.trauma = Math.min(1, this.trauma + (weapon.id === 'prism_railgun' ? 0.2 : 0.07));
     soundEngine.playLaserFire(weapon.id);
     this.triggerHaptic(weapon.id === 'prism_railgun' ? 0.4 : 0.18, 0.12, 55);
-
-    // Fire origin from actual 3D RoboMaster emitter, clamped safely inside body radius to avoid wall clipping
-    let rawOrigin: Vec3;
-    if (this.localRobotRig) {
-      this.localRobotRig.root.updateMatrixWorld(true);
-      this.localRobotRig.getMuzzleWorldPos(_vec3D);
-      rawOrigin = { x: _vec3D.x, y: _vec3D.y, z: _vec3D.z };
-    } else {
-      rawOrigin = {
-        x: this.playerPos.x,
-        y: this.playerPos.y + PLAYER_EYE_HEIGHT,
-        z: this.playerPos.z,
-      };
-    }
-    const origin = clampMuzzleOriginToBody(
-      { x: this.playerPos.x, y: this.playerPos.y, z: this.playerPos.z },
-      rawOrigin,
-    );
-
-    // Converge laser accurately toward crosshair 3D target point
-    const aimPoint = this.computeCrosshairTargetPoint(weapon.range);
-    let dx = aimPoint.x - origin.x;
-    let dy = aimPoint.y - origin.y;
-    let dz = aimPoint.z - origin.z;
-    const baseLen = Math.hypot(dx, dy, dz) || 1;
-    dx /= baseLen;
-    dy /= baseLen;
-    dz /= baseLen;
-
-    const dir = {
-      x: dx + (Math.random() - 0.5) * weapon.spreadRad,
-      y: dy + (Math.random() - 0.5) * weapon.spreadRad,
-      z: dz + (Math.random() - 0.5) * weapon.spreadRad,
-    };
-    const dLen = Math.hypot(dir.x, dir.y, dir.z) || 1;
-    dir.x /= dLen;
-    dir.y /= dLen;
-    dir.z /= dLen;
-
-    const colliders = this.getActiveCollidersCached();
-    let hitDist = weapon.range;
-    for (const c of colliders) {
-      const t = rayIntersectAabb(origin, dir, c, hitDist);
-      if (t !== null && t < hitDist) hitDist = t;
-    }
-    if (this.latestSnapshot) {
-      for (const other of this.latestSnapshot.players) {
-        if (!other.alive || other.id === this.localPlayerId) continue;
-        const hit = rayIntersectRobot(
-          origin,
-          dir,
-          {
-            x: other.x,
-            y: other.y,
-            z: other.z,
-            chassisYaw: other.chassisYaw ?? other.yaw,
-            aimYaw: other.yaw,
-            robotClass: other.robotClass,
-          },
-          hitDist,
-        );
-        if (hit !== null && hit.dist < hitDist) hitDist = hit.dist;
-      }
-    }
-
-    const beamHex = COSMETICS.find((c) => c.id === this.loadout.beamColorId)?.hex || '#06B6D4';
-    this.spawnBeamVisual({
-      id: `local_${now}`,
-      shooterId: this.localPlayerId,
-      start: origin,
-      end: {
-        x: origin.x + dir.x * hitDist,
-        y: origin.y + dir.y * hitDist,
-        z: origin.z + dir.z * hitDist,
-      },
-      colorHex: beamHex,
-      width: weapon.beamWidth,
-      timestamp: now,
-    });
-
-    this.network.send('player:fire', { origin, dir });
   }
 
   private triggerDash(): void {
-    if (this.dashCooldown > 0 || this.phase !== 'playing') return;
-    this.dashCooldown = 3.2;
-    this.dashTimer = 0.24;
+    if (this.dashCooldown > 0 || this.wantsDash || this.phase !== 'playing') return;
+    this.wantsDash = true;
     soundEngine.playDash();
   }
 
   private triggerGadget(): void {
     if (this.gadgetCooldown > 0 || this.phase !== 'playing') return;
     const spec = GADGETS[this.loadout.gadgetId] || GADGETS.phase_dash;
+    if (!this.sendAction('player:gadget')) return;
     this.gadgetCooldown = spec.cooldownSec;
     if (spec.id === 'phase_dash') {
-      this.dashTimer = 0.35;
       soundEngine.playDash();
     } else {
       soundEngine.playHazardTelegraph();
     }
-    this.network.send('player:gadget', { gadgetId: spec.id });
   }
 
   private triggerClassSkill(): void {
     if (this.classSkillCooldown > 0 || this.phase !== 'playing') return;
-    const spec = ROBOT_CLASSES[this.loadout.robotClass] || ROBOT_CLASSES.s1_striker;
+    const me = this.latestSnapshot?.players.find((p) => p.id === this.localPlayerId);
+    const spec = ROBOT_CLASSES[this.getEffectiveLocalRobotClass(me)];
+    if (!this.sendAction('player:class_skill')) return;
     this.classSkillCooldown = spec.classSkillCooldownSec;
     this.localOverclockUntil = performance.now() + 5000;
     if (spec.id === 's1_striker') {
@@ -1467,7 +1396,6 @@ export class LaserTagEngine {
     }
     this.setEconomyAlert(spec.id === 'ep_miner' ? 'turbo_extraction' : 'overclock_surge');
     soundEngine.playDash();
-    this.network.triggerClassSkill();
   }
 
   private isLocalOverclocked(me: CombatantSnapshot | undefined): boolean {
@@ -1498,20 +1426,16 @@ export class LaserTagEngine {
 
   private stepGameplay(dt: number): void {
     const me = this.latestSnapshot?.players.find((p) => p.id === this.localPlayerId);
-    const alive = me ? me.alive : true;
-    const slowed = me ? me.slowedUntil > Date.now() : false;
-    const classSpec = ROBOT_CLASSES[this.loadout.robotClass] || ROBOT_CLASSES.s1_striker;
+    const alive = Boolean(me?.alive && this.latestSnapshot?.phase === 'active');
 
     // Weapon heat & cooldowns
-    const weapon = WEAPONS[this.loadout.weaponId] || WEAPONS.pulse_carbine;
+    const weapon = WEAPONS[me?.weaponId ?? this.loadout.weaponId];
     const coolMult = this.overheated ? 1.45 : 1.0;
     this.heat = Math.max(0, this.heat - weapon.coolRatePerSec * coolMult * dt);
     if (this.overheated && this.heat <= 15) {
       this.overheated = false;
     }
 
-    if (this.dashTimer > 0) this.dashTimer = Math.max(0, this.dashTimer - dt);
-    if (this.dashCooldown > 0) this.dashCooldown = Math.max(0, this.dashCooldown - dt);
     if (this.gadgetCooldown > 0) this.gadgetCooldown = Math.max(0, this.gadgetCooldown - dt);
     if (this.classSkillCooldown > 0) this.classSkillCooldown = Math.max(0, this.classSkillCooldown - dt);
     if (this.hitmarkerTimer > 0) this.hitmarkerTimer = Math.max(0, this.hitmarkerTimer - dt);
@@ -1521,6 +1445,7 @@ export class LaserTagEngine {
     let gpMoveX = 0;
     let gpMoveZ = 0;
     let gpFire = false;
+    this.gamepadAds = false;
     if (this.controller.gamepadEnabled && navigator.getGamepads) {
       const pads = navigator.getGamepads();
       const gp = pads.find((p) => p && p.connected);
@@ -1546,7 +1471,7 @@ export class LaserTagEngine {
         const rtVal = gp.buttons[7]?.value ?? 0;
         const ltVal = gp.buttons[6]?.value ?? 0;
         gpFire = rtVal > this.controller.triggerThreshold;
-        this.adsActive = this.adsActive || ltVal > this.controller.triggerThreshold;
+        this.gamepadAds = ltVal > this.controller.triggerThreshold;
         if (gp.buttons[1]?.pressed) this.triggerDash();
         if (gp.buttons[3]?.pressed) this.triggerClassSkill();
         if (gp.buttons[5]?.pressed) this.triggerGadget();
@@ -1584,62 +1509,34 @@ export class LaserTagEngine {
     const wishX = -sinY * forwardInput + cosY * strafeInput;
     const wishZ = -cosY * forwardInput - sinY * strafeInput;
 
-    let speed = BASE_RUN_SPEED * classSpec.speedMult;
-    if (this.dashTimer > 0) speed *= DASH_SPEED_MULT;
-    if (slowed) speed *= CRYO_SLOW_MULT;
-    if (this.adsActive) speed *= 0.72;
-
-    const targetVx = wishX * speed;
-    const targetVz = wishZ * speed;
-    const accel = this.grounded ? 14 : 6;
-    this.playerVel.x = THREE.MathUtils.damp(this.playerVel.x, targetVx, accel, dt);
-    this.playerVel.z = THREE.MathUtils.damp(this.playerVel.z, targetVz, accel, dt);
-
-    this.playerVel.y -= 19.5 * dt;
-
     const map = MAPS[this.currentMapId];
-    const colliders = this.getActiveCollidersCached();
-
-    this.otherRobotScratch.length = 0;
-    if (this.latestSnapshot) {
-      for (const other of this.latestSnapshot.players) {
-        if (!other.alive || other.id === this.localPlayerId) continue;
-        this.otherRobotScratch.push({ x: other.x, y: other.y, z: other.z });
-      }
+    this.inputClock += dt;
+    if (this.inputClock >= MOVEMENT_STEP_SEC) {
+      this.inputClock -= MOVEMENT_STEP_SEC;
+      this.sendMovementInput(wishX, wishZ);
     }
 
-    const resolved = resolvePlayerMovement(
-      { x: this.playerPos.x, y: this.playerPos.y, z: this.playerPos.z },
-      { x: this.playerVel.x, y: this.playerVel.y, z: this.playerVel.z },
-      dt,
-      colliders,
-      map.halfSize,
-      this.otherRobotScratch,
-    );
-
-    const movedHoriz = Math.hypot(resolved.pos.x - this.playerPos.x, resolved.pos.z - this.playerPos.z);
-    this.walkDistance += movedHoriz;
-
-    this.playerPos.set(resolved.pos.x, resolved.pos.y, resolved.pos.z);
-    this.grounded = resolved.grounded;
-    if (this.grounded && this.playerVel.y < 0) this.playerVel.y = 0;
-
-    // Smoothly align local RoboMaster chassis yaw with velocity or camera aim
+    const oldX = this.playerPos.x;
+    const oldZ = this.playerPos.z;
+    if (this.predictedMotion) {
+      const { pos, chassisYaw } = this.predictedMotion;
+      _vec3A.set(pos.x, pos.y, pos.z);
+      // A spawn/large correction snaps immediately; small corrections are blended across render frames.
+      if (this.playerPos.distanceToSquared(_vec3A) > 9) this.playerPos.copy(_vec3A);
+      else this.playerPos.lerp(_vec3A, 1 - Math.exp(-32 * dt));
+      this.localChassisYaw = normalizeAngle(this.localChassisYaw +
+        normalizeAngle(chassisYaw - this.localChassisYaw) * (1 - Math.exp(-28 * dt)));
+    }
+    const movedHoriz = Math.hypot(this.playerPos.x - oldX, this.playerPos.z - oldZ);
     const now = performance.now();
     const wantsFire =
       this.mouseDown || gpFire || this.keys.has('KeyF') || this.isBindingKeyHeld(this.controller.bindings.fire);
-    const horizSpeed = Math.hypot(this.playerVel.x, this.playerVel.z);
-    const desiredChassisYaw =
-      horizSpeed > 0.65 ? Math.atan2(-this.playerVel.x, -this.playerVel.z) : this.yaw;
-    const chassisDelta = Math.abs(normalizeAngle(desiredChassisYaw - this.localChassisYaw));
-    const chassisRate = chassisDelta > 1.85 ? 11.5 : 8.2;
-    this.localChassisYaw = rotateTowardsAngle(this.localChassisYaw, desiredChassisYaw, chassisRate * dt);
 
     // Detect nearby ore vein & handle hold-to-mine ([E] or EP Miner LMB near ore)
     this.nearbyOreNode = this.updateNearbyOreNode();
     const holdingMineKey = this.isBindingKeyHeld(this.controller.bindings.classSkill) || this.keys.has('KeyE');
     const epAutoMineWithFire =
-      !canRobotClassFire(this.loadout.robotClass) &&
+      !canRobotClassFire(this.getEffectiveLocalRobotClass(me)) &&
       Boolean(this.nearbyOreNode) &&
       (this.mouseDown || gpFire);
 
@@ -1647,7 +1544,7 @@ export class LaserTagEngine {
       this.localMiningActive = true;
       if (now - this.lastMineSentMs >= 150) {
         this.lastMineSentMs = now;
-        this.network.sendMine();
+        this.sendAction('player:mine');
       }
       if (now - this.lastMineSparkMs >= 180) {
         this.lastMineSparkMs = now;
@@ -1682,23 +1579,6 @@ export class LaserTagEngine {
         this.localMiningActive,
         this.isLocalOverclocked(me),
       );
-    }
-
-    // Send movement + chassisYaw update to server at 20Hz
-    if (now - this.lastNetMoveSent >= 48) {
-      this.lastNetMoveSent = now;
-      this.network.send('player:move', {
-        x: this.playerPos.x,
-        y: this.playerPos.y,
-        z: this.playerPos.z,
-        yaw: this.yaw,
-        chassisYaw: this.localChassisYaw,
-        pitch: this.pitch,
-        vx: this.playerVel.x,
-        vy: this.playerVel.y,
-        vz: this.playerVel.z,
-        dashing: this.dashTimer > 0,
-      });
     }
   }
 
@@ -1770,7 +1650,6 @@ export class LaserTagEngine {
       if (!Number.isFinite(this.targetYaw)) this.targetYaw = this.yaw;
       if (!Number.isFinite(this.pitch)) this.pitch = -0.04;
       if (!Number.isFinite(this.targetPitch)) this.targetPitch = this.pitch;
-      if (!Number.isFinite(this.currentCamDist)) this.currentCamDist = 4.55;
 
       // Apply accumulated pointer deltas smoothly every frame (prevents mouse-polling beat stutter)
       if (this.phase === 'playing') {
@@ -1778,7 +1657,7 @@ export class LaserTagEngine {
           const sens =
             0.0022 *
             this.controller.mouseSensitivity *
-            (this.adsActive ? this.controller.adsMultiplier : 1.0);
+            (this.adsActive || this.gamepadAds ? this.controller.adsMultiplier : 1.0);
           const ySign = this.controller.invertY ? 1 : -1;
           this.targetYaw = normalizeAngle(this.targetYaw - this.pendingLookDx * sens);
           this.targetPitch = THREE.MathUtils.clamp(
@@ -1830,31 +1709,18 @@ export class LaserTagEngine {
       vis.crystalGroup.rotation.y += dt * 0.35;
     }
 
-    // Smooth dead-reckoning & anti-jerk angular damping for remote RoboMaster combatants
+    // Interpolate from the last rendered pose rather than predicting other players' inputs.
     for (const actor of this.remoteActors.values()) {
       if (!actor.rig.root.visible) continue;
       const prevX = actor.rig.root.position.x;
       const prevZ = actor.rig.root.position.z;
-
-      const sinceSnap = Math.min(0.14, Math.max(0, (now - actor.lastSnapshotMs) / 1000));
-      const predX = actor.targetPos.x + actor.vel.x * sinceSnap;
-      const predY = actor.targetPos.y;
-      const predZ = actor.targetPos.z + actor.vel.z * sinceSnap;
-      _vec3A.set(predX, predY, predZ);
-
-      const errDist = actor.rig.root.position.distanceTo(_vec3A);
-      if (errDist > 8.5) {
-        actor.rig.root.position.copy(_vec3A);
-      } else {
-        actor.rig.root.position.lerp(_vec3A, 1 - Math.exp(-13 * dt));
-      }
-
-      const dChassis = normalizeAngle(actor.targetChassisYaw - actor.chassisYaw);
-      actor.chassisYaw = normalizeAngle(actor.chassisYaw + dChassis * (1 - Math.exp(-10 * dt)));
-
-      const dAim = normalizeAngle(actor.targetAimYaw - actor.aimYaw);
-      actor.aimYaw = normalizeAngle(actor.aimYaw + dAim * (1 - Math.exp(-14 * dt)));
-      actor.aimPitch = THREE.MathUtils.damp(actor.aimPitch, actor.targetPitch, 14, dt);
+      const fraction = THREE.MathUtils.clamp((now - actor.lastSnapshotMs) / (MOVEMENT_STEP_SEC * 1000), 0, 1);
+      actor.rig.root.position.lerpVectors(actor.previousPos, actor.targetPos, fraction);
+      actor.chassisYaw = normalizeAngle(actor.previousChassisYaw +
+        normalizeAngle(actor.targetChassisYaw - actor.previousChassisYaw) * fraction);
+      actor.aimYaw = normalizeAngle(actor.previousAimYaw +
+        normalizeAngle(actor.targetAimYaw - actor.previousAimYaw) * fraction);
+      actor.aimPitch = THREE.MathUtils.lerp(actor.previousPitch, actor.targetPitch, fraction);
 
       actor.rig.root.rotation.y = actor.chassisYaw;
       const turretRelYaw = normalizeAngle(actor.aimYaw - actor.chassisYaw);
@@ -1925,61 +1791,10 @@ export class LaserTagEngine {
       );
       this.camera.lookAt(0, 3.6, 0);
     } else {
-      // Third-person tactical over-shoulder chase camera with centered safe pivot & smooth arm damping
-      const map = MAPS[this.currentMapId];
-      const colliders = this.getActiveCollidersCached();
-
-      _euler.set(this.pitch, this.yaw, 0, 'YXZ');
-      const forward = _vec3A.set(0, 0, -1).applyEuler(_euler).normalize();
-      const right = _vec3B.set(1, 0, 0).applyEuler(_euler).normalize();
-
-      const desiredDist = this.adsActive ? 2.65 : 4.55;
-      const shoulderOffset = this.adsActive ? 0.52 : 0.78;
-      const verticalLift = this.adsActive ? 0.42 : 0.78;
-
-      const pivot = {
-        x: this.playerPos.x,
-        y: this.playerPos.y + PLAYER_EYE_HEIGHT + verticalLift * 0.42,
-        z: this.playerPos.z,
-      };
-      const desiredCam = _vec3C.set(
-        this.playerPos.x - forward.x * desiredDist + right.x * shoulderOffset,
-        this.playerPos.y + PLAYER_EYE_HEIGHT + verticalLift - forward.y * desiredDist * 0.85,
-        this.playerPos.z - forward.z * desiredDist + right.z * shoulderOffset,
-      );
-
-      const toCam = _vec3D.copy(desiredCam).sub(_vec3B.set(pivot.x, pivot.y, pivot.z));
-      const fullLen = Math.max(0.1, toCam.length());
-      toCam.divideScalar(fullLen);
-      const rayDir = { x: toCam.x, y: toCam.y, z: toCam.z };
-
-      let safeLen = fullLen;
-      for (const c of colliders) {
-        const hitT = rayIntersectAabb(pivot, rayDir, c, safeLen);
-        if (hitT !== null && hitT < safeLen) {
-          safeLen = Math.max(0.85, hitT - 0.35);
-        }
-      }
-
-      // Include perimeter walls along the ray so rotating near boundaries pulls smoothly instead of sliding flat
-      const maxBound = map.halfSize - 0.85;
-      if (Math.abs(rayDir.x) > 1e-5) {
-        const tx = ((rayDir.x > 0 ? maxBound : -maxBound) - pivot.x) / rayDir.x;
-        if (tx > 0 && tx < safeLen) safeLen = Math.max(0.85, tx);
-      }
-      if (Math.abs(rayDir.z) > 1e-5) {
-        const tz = ((rayDir.z > 0 ? maxBound : -maxBound) - pivot.z) / rayDir.z;
-        if (tz > 0 && tz < safeLen) safeLen = Math.max(0.85, tz);
-      }
-
-      const distLambda = safeLen < this.currentCamDist ? 26 : 10;
-      this.currentCamDist = THREE.MathUtils.damp(this.currentCamDist, safeLen, distLambda, dt);
-
-      const camX = THREE.MathUtils.clamp(pivot.x + rayDir.x * this.currentCamDist, -maxBound, maxBound);
-      const camY = Math.max(0.55, pivot.y + rayDir.y * this.currentCamDist);
-      const camZ = THREE.MathUtils.clamp(pivot.z + rayDir.z * this.currentCamDist, -maxBound, maxBound);
-
-      this.camera.position.set(camX, camY, camZ);
+      const { position } = computePlayerCamera(this.playerPos,
+        { yaw: this.yaw, pitch: this.pitch, ads: this.adsActive || this.gamepadAds },
+        this.getActiveCollidersCached(), MAPS[this.currentMapId].halfSize);
+      this.camera.position.set(position.x, position.y, position.z);
       this.camera.rotation.set(
         this.pitch + (Math.random() - 0.5) * shake * 0.04,
         this.yaw + (Math.random() - 0.5) * shake * 0.04,
@@ -1988,7 +1803,7 @@ export class LaserTagEngine {
       );
 
       // Smooth FOV kick on ADS & Dash
-      const targetFov = this.adsActive
+      const targetFov = this.adsActive || this.gamepadAds
         ? this.controller.fov * 0.78
         : this.dashTimer > 0
           ? this.controller.fov + 8
@@ -2051,7 +1866,7 @@ export class LaserTagEngine {
     const spec = GADGETS[this.loadout.gadgetId] || GADGETS.phase_dash;
     const activeRobotClass = this.getEffectiveLocalRobotClass(me);
     const classSpec = ROBOT_CLASSES[activeRobotClass] || ROBOT_CLASSES.s1_striker;
-    const weaponSpec = WEAPONS[this.loadout.weaponId] || WEAPONS.pulse_carbine;
+    const weaponSpec = WEAPONS[me?.weaponId ?? this.loadout.weaponId];
     const armed = canRobotClassFire(activeRobotClass);
     const serverClassMatches = !me || me.robotClass === activeRobotClass;
     const overclockRemaining = Math.max(0, (this.localOverclockUntil - nowPerf) / 1000);
@@ -2202,8 +2017,12 @@ export class LaserTagEngine {
         const nextClass: RobotClass = currentClass === 'ep_miner' ? 's1_striker' : 'ep_miner';
         this.callbacks.onQuickSwitchClass?.(nextClass);
       } else if (this.matchesBinding(e, b.reload, ['KeyR'])) {
-        this.heat = Math.max(0, this.heat - 45);
-        this.overheated = false;
+        const now = performance.now();
+        if (now - this.lastVentMs >= VENT_COOLDOWN_MS && this.sendAction('player:vent')) {
+          this.lastVentMs = now;
+          this.heat = Math.max(0, this.heat - 45);
+          this.overheated = false;
+        }
       } else if (this.matchesBinding(e, b.voicePtt, ['KeyV'])) {
         this.callbacks.onVoicePttChange(true);
       }
@@ -2229,7 +2048,8 @@ export class LaserTagEngine {
       this.draggingLook = true;
       this.lastPointerX = e.clientX;
       this.lastPointerY = e.clientY;
-      if (!(this.loadout.robotClass === 'ep_miner' && this.nearbyOreNode)) {
+      const me = this.latestSnapshot?.players.find((p) => p.id === this.localPlayerId);
+      if (!(this.getEffectiveLocalRobotClass(me) === 'ep_miner' && this.nearbyOreNode)) {
         this.tryFireWeapon();
       }
     } else if (e.button === 2) {
@@ -2283,6 +2103,8 @@ export class LaserTagEngine {
     this.keys.clear();
     this.mouseDown = false;
     this.adsActive = false;
+    this.gamepadAds = false;
+    this.wantsDash = false;
     this.draggingLook = false;
     this.pendingLookDx = 0;
     this.pendingLookDy = 0;

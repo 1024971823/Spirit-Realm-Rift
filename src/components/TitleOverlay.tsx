@@ -1,9 +1,9 @@
 import React from 'react';
-import { Cpu, Crosshair, Pickaxe, Shield, Sliders, Trophy, Users } from 'lucide-react';
+import { Cpu, Crosshair, Pickaxe, Shield, Sliders, Trophy } from 'lucide-react';
 import { useI18n } from '../i18n/LanguageContext';
-import { ROBOT_CLASS_I18N, translateSkillTier } from '../i18n/translations';
-import { ROBOT_CLASSES } from '../shared/catalog';
-import { getSkillTier } from '../shared/matchmaking';
+import { ROBOT_CLASS_I18N, translateXpRank } from '../i18n/translations';
+import { getXpRank, ROBOT_CLASSES } from '../shared/catalog';
+import { MULTIPLAYER_TEXT } from '../i18n/multiplayer';
 import type { PlayerProfile, RobotClass } from '../shared/types';
 import { LanguageSwitch } from './LanguageSwitch';
 
@@ -14,7 +14,8 @@ interface TitleOverlayProps {
   onSelectRobotClass: (robotClass: RobotClass) => void;
   onStartMatch: () => void;
   onOpenLoadout: () => void;
-  onOpenSocial: () => void;
+  onSignOut: () => void;
+  onOpenModeration?: () => void;
   onOpenStats: () => void;
   onOpenSettings: () => void;
 }
@@ -26,18 +27,20 @@ export const TitleOverlay: React.FC<TitleOverlayProps> = ({
   onSelectRobotClass,
   onStartMatch,
   onOpenLoadout,
-  onOpenSocial,
+  onSignOut,
+  onOpenModeration,
   onOpenStats,
   onOpenSettings,
 }) => {
   const { lang, t } = useI18n();
-  const tier = getSkillTier(profile.stats.mmr);
+  const rank = getXpRank(profile.stats.xp).current;
+  const multiplayer = MULTIPLAYER_TEXT[lang];
   const selectedClass: RobotClass =
     profile.loadout?.robotClass === 'ep_miner' ? 'ep_miner' : 's1_striker';
 
   return (
     <div className="fixed inset-0 z-20 flex flex-col justify-between p-6 md:p-10 pointer-events-none">
-      {/* Directional gradient scrim preserving the right 65% for live 3D RoboMaster arena */}
+      {/* Directional gradient scrim preserving the right 65% for live 3D mech arena */}
       <div
         className="fixed inset-y-0 left-0 w-full md:w-[560px] pointer-events-none"
         style={{
@@ -51,8 +54,8 @@ export const TitleOverlay: React.FC<TitleOverlayProps> = ({
         <div className="flex items-center gap-3 text-xs text-slate-300 font-mono-tabular hud-text-stroke">
           <span className="font-bold text-white tracking-wide">{profile.callsign}</span>
           <span aria-hidden="true" className="text-slate-600">|</span>
-          <span style={{ color: tier.color }}>
-            {translateSkillTier(tier.label, lang)} · {profile.stats.mmr} MMR
+          <span style={{ color: rank.color }}>
+            {translateXpRank(rank.name, lang)} · {profile.stats.xp} XP
           </span>
           <span aria-hidden="true" className="text-slate-600">|</span>
           <span className={connected ? 'text-emerald-400' : 'text-amber-400'}>
@@ -60,7 +63,7 @@ export const TitleOverlay: React.FC<TitleOverlayProps> = ({
           </span>
         </div>
 
-        <LanguageSwitch />
+        <div className="pointer-events-auto flex items-center gap-3"><LanguageSwitch /><button type="button" onClick={onSignOut} className="text-sm text-cyan-300">{multiplayer.signOut}</button></div>
       </div>
 
       {/* Main Left-Third Robotics League Lockup */}
@@ -165,7 +168,7 @@ export const TitleOverlay: React.FC<TitleOverlayProps> = ({
             onClick={onStartMatch}
             className="chamfer-btn flex items-center justify-between px-5 py-3.5 bg-amber-500 hover:bg-amber-400 active:scale-[0.99] text-slate-950 font-display font-bold text-base tracking-wider uppercase transition-colors cursor-pointer whitespace-nowrap"
           >
-            <span>{t.enterArena} · {ROBOT_CLASSES[selectedClass].code}</span>
+            <span>{multiplayer.lobby}</span>
             <Crosshair className="w-5 h-5" />
           </button>
 
@@ -177,15 +180,6 @@ export const TitleOverlay: React.FC<TitleOverlayProps> = ({
             >
               <Shield className="w-4 h-4 text-cyan-400 shrink-0" />
               <span>{t.armory}</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={onOpenSocial}
-              className="chamfer-sm flex items-center gap-2.5 px-4 py-2.5 bg-[#121926] hover:bg-[#1A2436] border border-white/10 text-slate-100 text-sm font-medium transition-colors cursor-pointer whitespace-nowrap"
-            >
-              <Users className="w-4 h-4 text-amber-400 shrink-0" />
-              <span>{t.matchmakingVoice}</span>
             </button>
 
             <button
@@ -205,6 +199,7 @@ export const TitleOverlay: React.FC<TitleOverlayProps> = ({
               <Sliders className="w-4 h-4 text-slate-300 shrink-0" />
               <span>{t.controlsPad}</span>
             </button>
+            {onOpenModeration && <button type="button" onClick={onOpenModeration} className="chamfer-sm px-4 py-2.5 bg-[#121926] border border-white/10 text-left text-sm text-amber-300">{multiplayer.moderation}</button>}
           </div>
         </div>
       </div>

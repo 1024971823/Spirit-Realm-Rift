@@ -1,0 +1,37 @@
+name: Validate multiplayer
+on:
+  push:
+  pull_request:
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: prism
+          POSTGRES_PASSWORD: prism-ci
+          POSTGRES_DB: prism
+        ports: [5432:5432]
+        options: --health-cmd pg_isready --health-interval 3s --health-timeout 3s --health-retries 15
+      redis:
+        image: redis:8
+        ports: [6379:6379]
+        options: --health-cmd 'redis-cli ping' --health-interval 3s --health-timeout 3s --health-retries 15
+    env:
+      DATABASE_URL: postgresql://prism:prism-ci@127.0.0.1:5432/prism
+      REDIS_URL: redis://127.0.0.1:6379
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm test
+      - run: npm run build
+      - run: npm run test:integration
+      - run: npx playwright install --with-deps chromium firefox
+      - run: npm run test:browser
+      - run: docker build --tag prism-playtest:ci .

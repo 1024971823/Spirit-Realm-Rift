@@ -1,14 +1,14 @@
 import React, { useEffect, useState } from 'react';
 import { Gamepad2, Globe, Monitor, RotateCcw, Sliders, X } from 'lucide-react';
 import { useI18n } from '../i18n/LanguageContext';
-import { ACTION_BINDING_LABELS, PLATFORM_LABELS } from '../i18n/translations';
+import { ACTION_BINDING_LABELS } from '../i18n/translations';
 import { DEFAULT_CONTROLLER } from '../shared/catalog';
-import type { ControllerConfig, PlatformType, PlayerProfile } from '../shared/types';
+import type { ControllerConfig, PlayerProfile } from '../shared/types';
 import { LanguageSwitch } from './LanguageSwitch';
 
 interface SettingsModalProps {
   profile: PlayerProfile;
-  onUpdateProfileMeta: (callsign: string, platform: PlatformType, crossplay: boolean) => void;
+  onUpdateProfileMeta: (callsign: string) => void;
   onUpdateController: (controller: ControllerConfig) => void;
   onClose: () => void;
 }
@@ -21,8 +21,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 }) => {
   const { lang, t } = useI18n();
   const [callsign, setCallsign] = useState(profile.callsign);
-  const [platform, setPlatform] = useState<PlatformType>(profile.platform);
-  const [crossplay, setCrossplay] = useState(profile.crossplayEnabled);
   const [ctrl, setCtrl] = useState<ControllerConfig>(profile.controller);
   const [detectedPad, setDetectedPad] = useState<string | null>(null);
 
@@ -81,7 +79,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-          {/* Identity & Cross-Platform */}
+          {/* Player profile */}
           <div className="p-4 rounded-lg bg-[#141C2A] border border-white/10 space-y-3">
             <h3 className="text-sm font-semibold text-white flex items-center gap-2">
               <Monitor className="w-4 h-4 text-amber-400" />
@@ -101,49 +99,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 />
                 <button
                   type="button"
-                  onClick={() => onUpdateProfileMeta(callsign, platform, crossplay)}
+                  onClick={() => onUpdateProfileMeta(callsign)}
                   className="px-3 py-2 rounded bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-bold cursor-pointer whitespace-nowrap"
                 >
                   {t.saveBtn}
                 </button>
               </div>
             </div>
-
-            <div>
-              <label className="block text-xs text-slate-400 mb-1">{t.activePlatform}</label>
-              <div className="grid grid-cols-3 gap-2">
-                {(['pc', 'console', 'cloud'] as PlatformType[]).map((plat) => (
-                  <button
-                    key={plat}
-                    type="button"
-                    onClick={() => {
-                      setPlatform(plat);
-                      onUpdateProfileMeta(callsign, plat, crossplay);
-                    }}
-                    className={`py-2 rounded border text-xs font-semibold uppercase cursor-pointer ${
-                      platform === plat
-                        ? 'border-cyan-400 bg-cyan-500/15 text-white'
-                        : 'border-white/10 bg-[#0C111A] text-slate-400'
-                    }`}
-                  >
-                    {PLATFORM_LABELS[lang][plat]}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            <label className="flex items-center justify-between p-2.5 rounded bg-[#0C111A] border border-white/10 text-xs text-slate-200 cursor-pointer">
-              <span>{t.enableCrossplay}</span>
-              <input
-                type="checkbox"
-                checked={crossplay}
-                onChange={(e) => {
-                  setCrossplay(e.target.checked);
-                  onUpdateProfileMeta(callsign, platform, e.target.checked);
-                }}
-                className="accent-cyan-400"
-              />
-            </label>
 
             {/* Mouse & Camera */}
             <h4 className="text-xs font-semibold uppercase tracking-wider text-slate-400 pt-2">{t.mouseReticleTitle}</h4>
@@ -299,7 +261,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               </button>
             </div>
             <div className="grid grid-cols-2 gap-2 text-xs">
-              {(Object.keys(DEFAULT_CONTROLLER.bindings) as Array<keyof ControllerConfig['bindings']>).map((action) => (
+              {(Object.keys(DEFAULT_CONTROLLER.bindings) as Array<keyof ControllerConfig['bindings']>).filter(action => action !== 'voicePtt').map((action) => (
                 <div key={action} className="flex items-center justify-between px-2.5 py-1.5 rounded bg-[#0C111A] border border-white/10">
                   <span className="text-slate-300 truncate">{ACTION_BINDING_LABELS[lang][action]}</span>
                   <input

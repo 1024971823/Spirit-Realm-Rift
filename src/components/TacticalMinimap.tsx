@@ -419,7 +419,7 @@ export const TacticalMinimap: React.FC<TacticalMinimapProps> = ({
       <div className="flex flex-col gap-0.5 text-[11px] font-mono-tabular text-slate-300 hud-text-stroke">
         <div className="flex items-center gap-2">
           <span>
-            {localizedMapName} · {snapshot?.roomId || 'ARENA'}
+            {localizedMapName}{snapshot?.isPrivate ? ' · ' + snapshot.roomId : ''}
           </span>
           {snapshot?.isPrivate && (
             <button

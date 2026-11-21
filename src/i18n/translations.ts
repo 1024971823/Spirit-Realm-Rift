@@ -407,12 +407,12 @@ export function formatEngineAlert(
 
 export const UI_TEXT = {
   zh: {
-    pageTitle: '棱镜突破 — 机甲大师战术竞技场',
+    pageTitle: '棱镜突破 — 机甲战术竞技场',
     // TitleOverlay
     linking: '连接中...',
-    titleSubtitle: '机甲大师战术竞技场 · 职业联赛',
+    titleSubtitle: '机甲战术竞技场 · 封闭测试',
     titleDesc:
-      '驾驶全向机动 RoboMaster S1 突击手，或部署关节机械臂 RoboMaster EP 工程车采集矿脉、赚取全队弹药经济，制霸动态反应堆竞技场。',
+      '驾驶全向机动 RoboMaster S1 突击手，或部署关节机械臂 RoboMaster EP 工程机器人采集矿脉、赚取全队弹药经济，制霸动态反应堆竞技场。',
     deployChassisUnit: '选择出战机甲单位',
     enterArena: '进入战场',
     armory: '军械库',
@@ -604,11 +604,11 @@ export const UI_TEXT = {
     lossBadge: '负',
     noMatchesYet: '暂无比赛记录，快进入战场开始首局对战吧！',
     // SettingsModal
-    settingsTitle: '控制、视角与跨平台设置',
-    settingsDesc: '自定义界面语言、鼠标与手柄灵敏度曲线、按键绑定及跨平台档案。',
+    settingsTitle: '控制与视角设置',
+    settingsDesc: '自定义界面语言、鼠标与手柄灵敏度曲线、按键绑定及玩家档案。',
     languageSection: '界面语言 / Language',
     languageDesc: '即时切换游戏界面、提示与播报的显示语言。',
-    operativeProfileTitle: '操作手档案与跨平台',
+    operativeProfileTitle: '操作手档案',
     callsignLabel: '操作手代号',
     saveBtn: '保存',
     activePlatform: '当前平台标识',
@@ -633,10 +633,10 @@ export const UI_TEXT = {
     resetDefaults: '恢复默认',
   },
   en: {
-    pageTitle: 'Prism Breach — RoboMaster Tactical Arena',
+    pageTitle: 'Prism Breach — Mech Arena',
     // TitleOverlay
     linking: 'Linking...',
-    titleSubtitle: 'ROBOMASTER ARENA · PRO LEAGUE',
+    titleSubtitle: 'TACTICAL ARENA · CLOSED TEST',
     titleDesc:
       'Pilot an armored RoboMaster S1 Striker or deploy the articulated RoboMaster EP Engineer to harvest ore veins, fund team ammo supply, and dominate reactive arenas.',
     deployChassisUnit: 'Deploy Chassis Unit',
@@ -831,11 +831,11 @@ export const UI_TEXT = {
     lossBadge: 'LOSS',
     noMatchesYet: 'No recent matches yet. Deploy into an arena to record your first match!',
     // SettingsModal
-    settingsTitle: 'Controller, Aim & Cross-Platform',
-    settingsDesc: 'Customize interface language, input curves, deadzones, button mappings, and crossplay profile.',
+    settingsTitle: 'Controller & Aim',
+    settingsDesc: 'Customize interface language, input curves, deadzones, button mappings, and player profile.',
     languageSection: 'Interface Language / 界面语言',
     languageDesc: 'Switch UI, HUD alerts, and telemetry labels between Chinese and English instantly.',
-    operativeProfileTitle: 'Operative & Cross-Platform Profile',
+    operativeProfileTitle: 'Operative Profile',
     callsignLabel: 'Callsign',
     saveBtn: 'Save',
     activePlatform: 'Active Platform',

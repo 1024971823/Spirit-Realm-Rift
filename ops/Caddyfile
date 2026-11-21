@@ -1,0 +1,9 @@
+{$PRISM_HOST} {
+  header {
+    Referrer-Policy no-referrer
+    X-Content-Type-Options nosniff
+    X-Frame-Options DENY
+  }
+  respond /metrics 404
+  reverse_proxy 127.0.0.1:3000
+}

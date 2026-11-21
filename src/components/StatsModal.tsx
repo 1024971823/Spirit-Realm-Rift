@@ -1,9 +1,9 @@
 import React from 'react';
 import { ShieldCheck, Trophy, X } from 'lucide-react';
 import { useI18n } from '../i18n/LanguageContext';
-import { MAP_I18N, MODE_I18N, translateSkillTier, WEAPON_I18N } from '../i18n/translations';
-import { WEAPONS } from '../shared/catalog';
-import { getSkillTier } from '../shared/matchmaking';
+import { MAP_I18N, MODE_I18N, translateXpRank, WEAPON_I18N } from '../i18n/translations';
+import { getXpRank, WEAPONS } from '../shared/catalog';
+import { MULTIPLAYER_TEXT } from '../i18n/multiplayer';
 import type { AntiCheatAudit, PlayerProfile, WeaponId } from '../shared/types';
 
 interface StatsModalProps {
@@ -21,7 +21,7 @@ export const StatsModal: React.FC<StatsModalProps> = ({
 }) => {
   const { lang, t } = useI18n();
   const { stats } = profile;
-  const tier = getSkillTier(stats.mmr);
+  const rank = getXpRank(stats.xp).current;
   const winRate = stats.matchesPlayed > 0 ? Math.round((stats.wins / stats.matchesPlayed) * 100) : 0;
   const kd = (stats.kills / Math.max(1, stats.deaths)).toFixed(2);
   const accuracy = stats.shotsFired > 0 ? Math.round((stats.shotsHit / stats.shotsFired) * 100) : 0;
@@ -40,7 +40,7 @@ export const StatsModal: React.FC<StatsModalProps> = ({
             <div>
               <h2 className="font-display font-bold text-2xl text-white uppercase tracking-wide">{t.statsTitle}</h2>
               <p className="text-xs text-slate-400 font-mono-tabular">
-                {profile.callsign} · <span style={{ color: tier.color }}>{translateSkillTier(tier.label, lang)}</span> ({stats.mmr} MMR)
+                {profile.callsign} · <span style={{ color: rank.color }}>{translateXpRank(rank.name, lang)}</span> ({stats.xp} XP)
               </p>
             </div>
           </div>
@@ -149,8 +149,8 @@ export const StatsModal: React.FC<StatsModalProps> = ({
                   className="px-3 py-2 rounded bg-[#0C111A] border border-white/10 flex items-center justify-between text-xs font-mono-tabular"
                 >
                   <div className="flex items-center gap-3">
-                    <span className={m.won ? 'text-emerald-400 font-bold' : 'text-red-400 font-bold'}>
-                      {m.won ? t.winBadge : t.lossBadge}
+                    <span className={m.draw ? 'text-slate-300 font-bold' : m.won ? 'text-emerald-400 font-bold' : 'text-red-400 font-bold'}>
+                      {m.draw ? MULTIPLAYER_TEXT[lang].draw : m.won ? t.winBadge : t.lossBadge}
                     </span>
                     <span className="text-white">{MAP_I18N[lang][m.mapId]?.name ?? m.mapId}</span>
                     <span className="text-slate-400">
@@ -160,9 +160,7 @@ export const StatsModal: React.FC<StatsModalProps> = ({
                   <div className="flex items-center gap-4">
                     <span className="text-slate-200">{m.kills}K / {m.deaths}D</span>
                     <span className="text-cyan-400">{t.accShort(m.accuracy)}</span>
-                    <span className={m.mmrDelta >= 0 ? 'text-emerald-400' : 'text-red-400'}>
-                      {m.mmrDelta >= 0 ? `+${m.mmrDelta}` : m.mmrDelta} MMR
-                    </span>
+                    <span className="text-amber-300">+{m.xpEarned} XP</span>
                   </div>
                 </div>
               ))

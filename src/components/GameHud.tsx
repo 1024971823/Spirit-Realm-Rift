@@ -2,8 +2,6 @@ import React, { useEffect, useMemo, useState } from 'react';
 import {
   Coins,
   Cpu,
-  Mic,
-  MicOff,
   Pause,
   Pickaxe,
   Repeat,
@@ -22,12 +20,12 @@ import {
   translateControlOwner,
   translateOreLabel,
   translateTeamName,
-  VOICE_CHANNEL_LABELS,
   WEAPON_I18N,
 } from '../i18n/translations';
 import { KillFeed } from './KillFeed';
 import { TacticalMinimap } from './TacticalMinimap';
-import type { ChatMessage } from '../net/clientSocket';
+import { RoomChat, type ChatViewProps } from './RoomChat';
+import { MULTIPLAYER_TEXT } from '../i18n/multiplayer';
 import { AMMO_PACKS, canRobotClassFire, GADGETS, MAPS, ROBOT_CLASSES, WEAPONS } from '../shared/catalog';
 import type {
   AmmoPackId,
@@ -35,7 +33,6 @@ import type {
   LoadoutConfig,
   MatchSnapshot,
   RobotClass,
-  VoiceChannel,
 } from '../shared/types';
 
 interface GameHudProps {
@@ -46,14 +43,10 @@ interface GameHudProps {
   controller: ControllerConfig;
   pingMs: number;
   muted: boolean;
-  voiceChannel: VoiceChannel;
-  voiceSpeaking: boolean;
-  chatMessages: ChatMessage[];
+  chat: ChatViewProps;
   onToggleMute: () => void;
-  onToggleVoiceChannel: () => void;
   onPause: () => void;
   onRequestPointerLock: () => void;
-  onSendChat: (text: string) => void;
   onBuyAmmo: (packId: AmmoPackId) => void;
   onTriggerClassSkill: () => void;
   onQuickSwitchClass: (nextClass: RobotClass) => void;
@@ -67,14 +60,10 @@ export const GameHud: React.FC<GameHudProps> = ({
   controller,
   pingMs,
   muted,
-  voiceChannel,
-  voiceSpeaking,
-  chatMessages,
+  chat,
   onToggleMute,
-  onToggleVoiceChannel,
   onPause,
   onRequestPointerLock,
-  onSendChat,
   onBuyAmmo,
   onTriggerClassSkill,
   onQuickSwitchClass,
@@ -82,7 +71,7 @@ export const GameHud: React.FC<GameHudProps> = ({
   const { lang, t } = useI18n();
   const [trailingHp, setTrailingHp] = useState(hud.hp);
   const [chatOpen, setChatOpen] = useState(false);
-  const [chatDraft, setChatDraft] = useState('');
+  const chatText = MULTIPLAYER_TEXT[lang];
   const [copiedCode, setCopiedCode] = useState(false);
 
   useEffect(() => {
@@ -115,7 +104,6 @@ export const GameHud: React.FC<GameHudProps> = ({
 
   const me = snapshot?.players.find((p) => p.id === localPlayerId);
   const myTeam = me?.team ?? 'cobalt';
-  const speakers = snapshot?.players.filter((p) => p.speaking) || [];
   const ffaLeader = snapshot?.mode === 'ffa'
     ? [...(snapshot.players || [])].sort((a, b) => b.kills - a.kills || b.damageDealt - a.damageDealt)[0]
     : null;
@@ -123,15 +111,6 @@ export const GameHud: React.FC<GameHudProps> = ({
   const isArmed = canRobotClassFire(activeClass);
   const lowAmmo = isArmed && hud.ammo <= Math.max(4, Math.floor(hud.maxAmmo * 0.2));
   const emptyAmmo = isArmed && hud.ammo <= 0;
-
-  const handleChatSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (chatDraft.trim()) {
-      onSendChat(chatDraft.trim());
-      setChatDraft('');
-    }
-    setChatOpen(false);
-  };
 
   const handleCopyInvite = () => {
     if (!snapshot?.roomId) return;
@@ -266,18 +245,6 @@ export const GameHud: React.FC<GameHudProps> = ({
           <button
             type="button"
             tabIndex={-1}
-            aria-label={`${t.voiceChannelAria}: ${VOICE_CHANNEL_LABELS[lang][voiceChannel]}`}
-            onClick={(e) => {
-              e.currentTarget.blur();
-              onToggleVoiceChannel();
-            }}
-            className="p-2 bg-[#0B1019]/92 hover:bg-[#162030] border border-white/15 text-slate-200 cursor-pointer"
-          >
-            {voiceChannel === 'muted' ? <MicOff className="w-4 h-4 text-red-400" /> : <Mic className={`w-4 h-4 ${voiceSpeaking ? 'text-emerald-400' : 'text-cyan-400'}`} />}
-          </button>
-          <button
-            type="button"
-            tabIndex={-1}
             aria-label={muted ? t.unmuteAudio : t.muteAudio}
             onClick={(e) => {
               e.currentTarget.blur();
@@ -358,49 +325,16 @@ export const GameHud: React.FC<GameHudProps> = ({
 
       {/* BOTTOM-LEFT: Active Robot Unit Plate, Vitality & Squad Comms */}
       <div className="fixed bottom-4 left-4 flex flex-col gap-2 w-80">
-        {/* Compact Squad Chat Feed */}
-        <div className="flex flex-col gap-1 max-h-20 overflow-hidden text-xs">
-          {chatMessages.slice(-3).map((m) => (
-            <div key={m.id} className="px-2 py-0.5 bg-[#0B1019]/82 text-slate-200 truncate">
-              <span className={m.team === 'cobalt' ? 'text-cyan-400 font-semibold' : 'text-amber-400 font-semibold'}>
-                {m.sender}:{' '}
-              </span>
-              <span>{m.text}</span>
-            </div>
-          ))}
-        </div>
-
-        <div className="pointer-events-auto flex items-center gap-2">
-          {!chatOpen ? (
-            <button
-              type="button"
-              onClick={() => setChatOpen(true)}
-              className="px-2.5 py-1 bg-[#0B1019]/88 border border-white/10 text-[11px] text-slate-300 hover:text-white cursor-pointer whitespace-nowrap"
-            >
-              {t.squadChat}
-            </button>
-          ) : (
-            <form onSubmit={handleChatSubmit} className="flex gap-1.5 w-full">
-              <input
-                type="text"
-                autoFocus
-                value={chatDraft}
-                onChange={(e) => setChatDraft(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Escape') {
-                    e.stopPropagation();
-                    setChatOpen(false);
-                  }
-                }}
-                onBlur={() => setChatOpen(false)}
-                placeholder={t.messageSquadPlaceholder}
-                className="flex-1 px-2.5 py-1 bg-[#0B1019] border border-cyan-500/50 text-xs text-white focus:outline-none"
-              />
-            </form>
-          )}
-          <span className="text-[11px] font-mono-tabular text-slate-300 hud-text-stroke truncate">
-            {t.voicePrefix} [{VOICE_CHANNEL_LABELS[lang][voiceChannel]}] {speakers.length > 0 ? `· ${speakers.map((s) => s.callsign).join(', ')}` : ''}
-          </span>
+        <div className="pointer-events-auto" onKeyDown={event => {
+          if (!chatOpen) return;
+          event.stopPropagation();
+          if (event.key === 'Escape') setChatOpen(false);
+        }}>
+          {chatOpen && <RoomChat {...chat} />}
+          <button type="button" aria-expanded={chatOpen} className="mt-1 rounded bg-[#0B1019]/95 px-3 py-1.5 text-xs text-cyan-300"
+            onClick={() => { if (!chatOpen && document.pointerLockElement) document.exitPointerLock(); setChatOpen(open => !open); }}>
+            {chatOpen ? chatText.close : chatText.roomChat}{!chatOpen && chat.messages.length > 0 ? ' (' + chat.messages.filter(m => !chat.blockedIds.includes(m.playerId)).length + ')' : ''}
+          </button>
         </div>
 
         {/* Robot Chassis + Vitality Cluster */}
