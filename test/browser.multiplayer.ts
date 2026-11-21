@@ -205,11 +205,19 @@ test('Chromium and Firefox: verified accounts, invite room, resume, and two six-
     args: ['--enable-unsafe-swiftshader', '--use-angle=swiftshader'],
   });
   t.after(() => chromiumBrowser.close());
-  const firefoxBrowser = await firefox.launch({ firefoxUserPrefs: { 'webgl.force-enabled': true } });
+  const firefoxBrowser = await firefox.launch({
+    headless: process.env.BROWSER_FIREFOX_HEADLESS !== '0',
+    firefoxUserPrefs: { 'webgl.force-enabled': true },
+  });
   t.after(() => firefoxBrowser.close());
   const browserPlayers = await Promise.all([chromiumBrowser, firefoxBrowser].map(async (browser, i) => {
     const context = await browser.newContext({ viewport: { width: 960, height: 720 } });
     const page = await context.newPage();
+    const browserName = browser.browserType().name();
+    const errors: string[] = [];
+    const recordError = (message: string) => { errors.push(message); if (errors.length > 20) errors.shift(); };
+    page.on('pageerror', error => recordError(error.message));
+    page.on('console', message => { if (message.type() === 'error') recordError(message.text()); });
     page.setDefaultTimeout(18_000);
     await observeThreeScenes(page);
     const observer = observePage(page);
@@ -229,7 +237,19 @@ test('Chromium and Firefox: verified accounts, invite room, resume, and two six-
     await page.getByLabel('Email', { exact: true }).fill(account.email);
     await page.getByLabel('Password', { exact: true }).fill(account.password);
     await button(page, 'Sign in').click();
-    await arena(page).waitFor({ state: 'attached' });
+    try {
+      await arena(page).waitFor({ state: 'attached' });
+    } catch (cause) {
+      const alerts = await page.getByRole('alert').allTextContents();
+      const webgl2 = await page.evaluate(() => {
+        const gl = document.createElement('canvas').getContext('webgl2');
+        if (!gl) return null;
+        const version = String(gl.getParameter(gl.VERSION));
+        gl.getExtension('WEBGL_lose_context')?.loseContext();
+        return version;
+      }).catch(() => 'unavailable');
+      throw new Error(browserName + ' arena initialization failed: ' + JSON.stringify({ alerts, webgl2, errors }), { cause });
+    }
     const session = await until(() => observer.events.get('session:state') as (SessionView & { playerId: string }) | undefined, 'authenticated lobby');
     assert.equal(session.room, null, 'login must not automatically enter a room');
     await button(page, 'Multiplayer lobby').click();

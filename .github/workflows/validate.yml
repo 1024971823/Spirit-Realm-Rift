@@ -37,5 +37,8 @@ jobs:
       - run: npm run build
       - run: npm run test:integration
       - run: npx playwright install --with-deps chromium firefox
-      - run: npm run test:browser
+      - run: xvfb-run -a npm run test:browser
+        env:
+          BROWSER_FIREFOX_HEADLESS: '0'
+          LIBGL_ALWAYS_SOFTWARE: '1'
       - run: docker build --tag prism-playtest:ci .
