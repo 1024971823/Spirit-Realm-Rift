@@ -1,5 +1,7 @@
+import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { WebSocket } from 'ws';
+import type { RoomView } from '../src/net/clientSocket.ts';
 
 export type Packet = {type: string; payload: any};
 export const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
@@ -28,6 +30,7 @@ export function connect(origin: string, cookie: string) {
     last: () => last,
     closed: () => code,
     clear: () => { received.length = 0; },
+    packets: (type: string) => received.filter(packet => packet.type === type).map(packet => packet.payload),
     send: (type: string, payload = {}) => ws.send(JSON.stringify({type, payload})),
     async find(type: string, predicate: (p: any) => boolean = () => true, timeout = 6000) {
       try {
@@ -41,6 +44,31 @@ export function connect(origin: string, cookie: string) {
       }
     },
   };
+}
+
+type TestClient = ReturnType<typeof connect>;
+type RoomVersion = Pick<RoomView, 'roomId' | 'version'>;
+
+export async function readyPrivateRoom([host, ...guests]: TestClient[], room: RoomVersion): Promise<RoomView> {
+  for (const seat of [host, ...guests]) seat.send('room:ready', { version: room.version, ready: true });
+  return (await host.find('session:state', s => s.room?.roomId === room.roomId &&
+    s.room.version === room.version && s.room.members.length === guests.length + 1 &&
+    s.room.members.every((member: RoomView['members'][number]) => member.ready))).room;
+}
+
+export async function beginPrivateCountdown(host: TestClient, room: RoomVersion): Promise<RoomView> {
+  host.clear();
+  host.send('room:start', { version: room.version });
+  return (await host.find('session:state', s => s.room?.roomId === room.roomId &&
+    s.room.phase === 'waiting' && s.room.version > room.version &&
+    typeof s.room.countdownEndsAt === 'number')).room;
+}
+
+export async function startPrivateRoom(host: TestClient, room: RoomVersion) {
+  const countdown = await beginPrivateCountdown(host, room);
+  const { snapshot } = await host.find('room:joined', p => p.roomId === room.roomId, 10_000);
+  assert.ok(Date.now() >= countdown.countdownEndsAt!, 'The room must honor its advertised countdown');
+  return snapshot;
 }
 
 export async function api(origin: string, path: string, options: {data?: unknown; cookie?: string; key?: string} = {}) {

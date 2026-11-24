@@ -9,6 +9,7 @@ import nodemailer from 'nodemailer';
 import { normalizePlayerProfile } from '../src/shared/catalog.ts';
 import type { GameModeId, MapId, PlayerProfile, WeaponId } from '../src/shared/types.ts';
 import { minorWindowEnd, permitted, restrictEligibility, type Eligibility } from './eligibility.ts';
+import { createSocial, readFriendCode, type SocialError } from './social.ts';
 
 export type Auth = { playerId: string; sessionId: string; email: string };
 export type Progress = {
@@ -305,6 +306,11 @@ export async function makeServices(onRevoked: (id: string, by: 'session' | 'acco
   };
   const fail = (res: Response, status: number, error: string) => res.status(status).json({ error });
   const ok = (res: Response) => res.json({ ok: true });
+  const social = createSocial(pool, tx);
+  const socialErrorStatus: Record<SocialError, number> = {
+    social_invalid: 400, social_unavailable: 404, social_limit: 409, social_request_received: 409, social_request_missing: 404,
+  };
+  const socialResult = (res: Response, error?: SocialError) => error ? fail(res, socialErrorStatus[error], error) : ok(res);
   const placeholderHash = await hashPassword('placeholder-password-never-used');
   const originGuard: RequestHandler = (req, res, next) => {
     if (['GET','HEAD','OPTIONS'].includes(req.method) || allowOrigin(req)) next();
@@ -438,16 +444,44 @@ export async function makeServices(onRevoked: (id: string, by: 'session' | 'acco
       const result = await getResult(playerId,req.params.id);
       return result ? res.json(result) : fail(res,404,'找不到这场对局');
     }));
+    app.get('/api/social', authorized(async (_req, res, { playerId }) => {
+      if (!await limit('social:list:' + playerId, 30, 60)) return fail(res, 429, 'rate_limited');
+      return res.json(await social.list(playerId));
+    }));
+    app.post('/api/social/request', authorized(async (req, res, { playerId }) => {
+      if (!await limit('social:request:' + playerId, 12, 60)) return fail(res, 429, 'rate_limited');
+      const code = readFriendCode(req.body?.friendCode);
+      return socialResult(res, code ? await social.request(playerId, code) : 'social_invalid');
+    }));
+    app.post('/api/social/respond', authorized(async (req, res, { playerId }) => {
+      const target = req.body?.playerId;
+      const accept = req.body?.accept;
+      if (!isId(target) || target.toLowerCase() === playerId || typeof accept !== 'boolean') return socialResult(res, 'social_invalid');
+      if (!await limit('social:action:' + playerId, 30, 60)) return fail(res, 429, 'rate_limited');
+      return socialResult(res, await social.respond(playerId, target.toLowerCase(), accept));
+    }));
+    app.post('/api/social/remove', authorized(async (req, res, { playerId }) => {
+      const target = req.body?.playerId;
+      if (!isId(target) || target.toLowerCase() === playerId) return socialResult(res, 'social_invalid');
+      if (!await limit('social:action:' + playerId, 30, 60)) return fail(res, 429, 'rate_limited');
+      await social.remove(playerId, target.toLowerCase());
+      return ok(res);
+    }));
+    app.post('/api/social/settings', authorized(async (req, res, { playerId }) => {
+      if (typeof req.body?.allowInvites !== 'boolean') return socialResult(res, 'social_invalid');
+      if (!await limit('social:action:' + playerId, 30, 60)) return fail(res, 429, 'rate_limited');
+      await social.setAllowInvites(playerId, req.body.allowInvites);
+      return ok(res);
+    }));
     app.get('/api/chat/blocks', authorized(async (_req,res,{playerId}) => {
       const { rows } = await pool.query('SELECT blocked_id FROM chat_blocks WHERE player_id=$1', [playerId]);
       return res.json({ playerIds: rows.map(row => row.blocked_id) });
     }));
     app.post('/api/chat/block', authorized(async (req,res,auth) => {
       const { playerId, blocked } = req.body || {};
-      if (!isId(playerId) || playerId === auth.playerId || typeof blocked !== 'boolean') return fail(res,400,'请求无效');
+      if (!isId(playerId) || playerId.toLowerCase() === auth.playerId || typeof blocked !== 'boolean') return fail(res,400,'请求无效');
       if (!await limit('block:' + auth.playerId,30,60)) return fail(res,429,'请求过于频繁');
-      if (blocked) await pool.query('INSERT INTO chat_blocks(player_id,blocked_id) SELECT $1,id FROM accounts WHERE id=$2 ON CONFLICT DO NOTHING',[auth.playerId,playerId]);
-      else await pool.query('DELETE FROM chat_blocks WHERE player_id=$1 AND blocked_id=$2',[auth.playerId,playerId]);
+      await social.setBlocked(auth.playerId, playerId.toLowerCase(), blocked);
       return ok(res);
     }));
     app.post('/api/chat/report', authorized(async (req,res,{playerId}) => {
@@ -486,5 +520,5 @@ export async function makeServices(onRevoked: (id: string, by: 'session' | 'acco
   const health = async () => { await Promise.all([redis.ping(),pool.query('SELECT 1')]); };
   const close = async () => { await Promise.allSettled([redis.close(),pool.end()]); };
   const isDraining = async () => process.env.DRAIN_MATCHES === '1' || await redis.exists(key('drain')) > 0;
-  return { install, authenticate, allowOrigin, getProfile, saveProfile, getResult, allowPlay, playUntil, lobby, limit, renewOwner, revokeOwner, openMatch, commitResults, cancelMatch, reap, chat, health, close, isDraining };
+  return { install, authenticate, allowOrigin, getProfile, saveProfile, getResult, allowPlay, playUntil, lobby, limit, renewOwner, revokeOwner, openMatch, commitResults, cancelMatch, reap, chat, social, health, close, isDraining };
 }

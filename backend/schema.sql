@@ -7,6 +7,20 @@ CREATE TABLE IF NOT EXISTS accounts (
   muted_until timestamptz,
   profile jsonb NOT NULL
 );
+ALTER TABLE accounts ADD COLUMN IF NOT EXISTS friend_code text NOT NULL
+  DEFAULT upper(substr(replace(gen_random_uuid()::text, '-', ''), 17, 16));
+ALTER TABLE accounts ADD COLUMN IF NOT EXISTS allow_friend_invites boolean NOT NULL DEFAULT true;
+CREATE UNIQUE INDEX IF NOT EXISTS accounts_friend_code_idx ON accounts(friend_code);
+CREATE TABLE IF NOT EXISTS friend_connections (
+  account_low uuid NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  account_high uuid NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  requested_by uuid NOT NULL,
+  accepted_at timestamptz,
+  PRIMARY KEY (account_low, account_high),
+  CHECK (account_low < account_high),
+  CHECK (requested_by IN (account_low, account_high))
+);
+CREATE INDEX IF NOT EXISTS friend_connections_high_idx ON friend_connections(account_high);
 CREATE TABLE IF NOT EXISTS sessions (
   digest text PRIMARY KEY,
   account_id uuid NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,

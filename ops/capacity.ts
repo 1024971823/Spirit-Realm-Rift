@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { WebSocket, type RawData } from 'ws';
 import { sleep, waitFor } from '../test/protocol.ts';
+import type { RoomView } from '../src/net/clientSocket.ts';
 
 const { LOAD_ORIGIN: origin, LOAD_COOKIE_FILE } = process.env;
 if (!origin || !LOAD_COOKIE_FILE || process.env.LOAD_ISOLATED !== '1') throw new Error('Use only a dedicated preproduction instance: set LOAD_ISOLATED=1, LOAD_ORIGIN and LOAD_COOKIE_FILE');
@@ -48,7 +49,7 @@ class Player {
   ws?: WebSocket;
   id = '';
   match = '';
-  room?: {roomId: string; phase: string; members: unknown[]; hostId: string};
+  room?: RoomView;
   queued = false;
   seq = 0;
   yaw = 0;
@@ -178,6 +179,19 @@ const players = cookies.slice(cookieOffset,cookieOffset+clients).map((cookie,i) 
 const publicCount = Math.max(6, Math.floor(active * .66 / 6) * 6);
 const custom = Array.from({length:(active-publicCount)/6},(_,i) => players.slice(publicCount+i*6,publicCount+i*6+6));
 const publicPlayers = players.slice(0,publicCount);
+function customWaiting(seats: Player[]) {
+  const [host] = seats;
+  const room = host.room;
+  if (room?.phase !== 'waiting' || room.countdownEndsAt !== null || room.hostId !== host.id || host.match ||
+      room.members.length !== seats.length || room.members.some(member => !member.connected) ||
+      seats.some(seat => !seat.id || seat.room?.roomId !== room.roomId || seat.room.version !== room.version)) return;
+  return room;
+}
+function readyCustom(seats: Player[], room: RoomView) {
+  for (const seat of seats) {
+    if (room.members.some(member => member.id === seat.id && !member.ready)) seat.send('room:ready', { version: room.version, ready: true });
+  }
+}
 let latestHealth: unknown;
 const report = async () => {
   const health = latestHealth = await fetch(origin+'/api/health').then(r=>r.json()).catch(() => ({ok:false}));
@@ -187,12 +201,14 @@ let actions: ReturnType<typeof setInterval> | undefined;
 let churn: ReturnType<typeof setInterval> | undefined;
 try {
   for(let i=0;i<clients;i+=40) await Promise.all(players.slice(i,i+40).map(p=>p.connect()));
-  await Promise.all(custom.map(async ([host,...guests],i) => {
+  await Promise.all(custom.map(async (seats,i) => {
+    const [host,...guests] = seats;
     host.send('room:create',{mode:['team_clash','control_core','ffa'][i%3],mapId:i%2?'cryo_relay':'reactor_foundry'});
     const code=await waitFor(() => host.room?.roomId);
     for (const guest of guests) guest.send('room:join',{roomId:code});
-    await waitFor(() => host.room?.members.length===6);
-    host.send('room:start');
+    readyCustom(seats, await waitFor(() => customWaiting(seats)));
+    const ready = await waitFor(() => host.room?.canStart && host.room);
+    host.send('room:start', { version: ready.version });
   }));
   for(const player of publicPlayers) player.send('queue:join');
   await waitFor(() => players.slice(0,active).every(p=>p.match), 30000);
@@ -204,7 +220,11 @@ try {
   let resumeIndex = 0;
   churn = setInterval(() => {
     for (const player of publicPlayers) if (player.id && !player.match && !player.room && !player.queued) player.send('queue:join');
-    for (const [host] of custom) if (host.room?.phase==='waiting' && host.room.members.length===6 && !host.match) host.send('room:start');
+    for (const seats of custom) {
+      const room = customWaiting(seats);
+      if (room?.canStart) seats[0].send('room:start', { version: room.version });
+      else if (room) readyCustom(seats, room);
+    }
     if (++resumeIndex % 5 === 0) void players[(resumeIndex*7)%active].reconnect();
   },2000);
   while(performance.now()-start < seconds*1000 && !stopped) { await sleep(Math.min(10000,seconds*1000-(performance.now()-start))); await report(); }

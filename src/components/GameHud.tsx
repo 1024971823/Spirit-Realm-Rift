@@ -11,6 +11,8 @@ import {
   Zap,
 } from 'lucide-react';
 import type { HudLiveState } from '../game/LaserTagEngine';
+import { TACTICAL_PINGS } from '../game/tacticalPings';
+import type { TacticalPingKind } from '../shared/social';
 import { useI18n } from '../i18n/LanguageContext';
 import {
   AMMO_PACK_I18N,
@@ -104,6 +106,13 @@ export const GameHud: React.FC<GameHudProps> = ({
 
   const me = snapshot?.players.find((p) => p.id === localPlayerId);
   const myTeam = me?.team ?? 'cobalt';
+  const tacticalPings = (hud.tacticalPings ?? []).filter((ping) =>
+    ping.matchId === snapshot?.matchId && ping.team === myTeam && !chat.blockedIds.includes(ping.playerId));
+  const tacticalLabels = lang === 'zh'
+    ? { title: '战术标记', choose: '移动鼠标或按方向键，松开 G 发出', padChoose: '右摇杆选择，松开方向键 ↓ 发出',
+      hint: '按住 G 标记', padHint: '按住手柄方向键 ↓ 标记' }
+    : { title: 'Tactical pings', choose: 'Move mouse or use arrow keys, then release G', padChoose: 'Select with the right stick, then release D-pad ↓',
+      hint: 'Hold G to ping', padHint: 'Hold D-pad ↓ to ping' };
   const ffaLeader = snapshot?.mode === 'ffa'
     ? [...(snapshot.players || [])].sort((a, b) => b.kills - a.kills || b.damageDealt - a.damageDealt)[0]
     : null;
@@ -147,6 +156,7 @@ export const GameHud: React.FC<GameHudProps> = ({
         localPlayerId={localPlayerId}
         localTeam={myTeam}
         localPose={localPose}
+        tacticalPings={tacticalPings}
         copiedCode={copiedCode}
         onCopyInvite={handleCopyInvite}
       />
@@ -276,8 +286,53 @@ export const GameHud: React.FC<GameHudProps> = ({
         />
       </div>
 
+      {snapshot?.mode !== 'ffa' && snapshot?.phase === 'active' && (
+        <div className="fixed left-1/2 top-[55%] -translate-x-1/2 max-w-[90vw] text-center pointer-events-none">
+          <div data-testid="tactical-ping-feed" className="flex flex-col items-center gap-1" aria-live="polite">
+            {tacticalPings.slice(-3).map((ping) => {
+              const info = TACTICAL_PINGS[ping.kind];
+              return <div key={ping.id} className="rounded border border-white/15 bg-[#0B1019]/90 px-2 py-1 text-xs"
+                style={{ color: info.color }}><span aria-hidden="true">{info.symbol} </span>{ping.callsign} · {info[lang]}</div>;
+            })}
+          </div>
+          {!hud.tacticalMenu && hud.alive && (
+            <span className="text-[10px] text-slate-300 hud-text-stroke">
+              {tacticalLabels.hint}{hud.gamepadName ? ' · ' + tacticalLabels.padHint : ''}
+            </span>
+          )}
+        </div>
+      )}
+
+      {hud.tacticalMenu && (
+        <div data-testid="tactical-ping-menu" className="fixed left-1/2 top-1/2 z-10 -translate-x-1/2 -translate-y-1/2 text-center"
+          aria-label={tacticalLabels.title}>
+          <div className="grid w-[min(21rem,96vw)] grid-cols-3 items-center gap-1">
+            {(['rally', 'support', 'danger', 'mine'] as const).map((kind) => {
+              const info = TACTICAL_PINGS[kind];
+              const slot: Record<TacticalPingKind, string> = {
+                rally: 'col-start-2 row-start-1', support: 'col-start-1 row-start-2',
+                danger: 'col-start-3 row-start-2', mine: 'col-start-2 row-start-3',
+              };
+              const selected = hud.tacticalMenu === kind;
+              return <div key={kind} data-kind={kind} data-selected={selected}
+                className={`${slot[kind]} rounded border bg-[#0B1019]/95 px-1 py-2 text-xs font-semibold ${selected ? 'ring-1 ring-white' : 'border-white/20'}`}
+                style={{ color: info.color, borderColor: selected ? info.color : undefined }}>
+                <span aria-hidden="true">{info.arrow} {info.symbol} </span>{info[lang]}
+              </div>;
+            })}
+            <div className="col-start-2 row-start-2 rounded bg-[#0B1019]/95 px-1 py-2 text-xs font-bold text-slate-100">
+              {tacticalLabels.title}
+            </div>
+          </div>
+          <div className="mt-2 rounded bg-[#0B1019]/95 px-1 py-1 text-[11px] text-slate-300">
+            <div>{tacticalLabels.choose}</div>
+            {hud.gamepadName && <div>{tacticalLabels.padChoose}</div>}
+          </div>
+        </div>
+      )}
+
       {/* CENTER: Precision SVG Crosshair & Hitmarker */}
-      <div className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 pointer-events-none">
+      <div className={`fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 pointer-events-none ${hud.tacticalMenu ? 'invisible' : ''}`}>
         <svg viewBox="-24 -24 48 48" className="w-10 h-10">
           {controller.crosshairStyle === 'precision' && (
             <g stroke={!isArmed ? '#34D399' : emptyAmmo ? '#EF4444' : '#F8FAFC'} strokeWidth="1.8" opacity="0.92">

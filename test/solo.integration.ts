@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { createServer } from 'node:net';
 import { test, type TestContext } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { connect, newAccount, sleep, waitFor } from './protocol.ts';
+import { connect, newAccount, readyPrivateRoom, sleep, startPrivateRoom, waitFor } from './protocol.ts';
 
 async function startGateway(t: TestContext, allowSolo: boolean) {
   const probe = createServer();
@@ -76,7 +76,7 @@ test('Private solo playtest is opt-in and supports bots, authoritative input and
     assert.equal(room.minPlayers, 2, 'The client cannot lower the server player requirement');
     assert.equal(room.members.length, 1);
     client.clear();
-    client.send('room:start');
+    client.send('room:start', { version: room.version });
     await client.find('session:error', error => error.code === 'need_two_players');
     client.send('room:leave');
     await client.find('session:state', state => !state.room);
@@ -92,10 +92,8 @@ test('Private solo playtest is opt-in and supports bots, authoritative input and
       const { room } = await client.find('session:state', state => state.room?.phase === 'waiting');
       assert.equal(room.minPlayers, 1);
       assert.equal(room.members.length, 1);
-      client.clear();
-      client.send('room:start');
-      const joined = await client.find('room:joined');
-      const snapshot = joined.snapshot;
+      const readyRoom = await readyPrivateRoom([client], room);
+      const snapshot = await startPrivateRoom(client, readyRoom);
       assert.equal(snapshot.phase, 'active');
       assert.equal(snapshot.players.length, fillBots ? 6 : 1);
       assert.equal(snapshot.players.filter((player: any) => player.isBot).length, fillBots ? 5 : 0);

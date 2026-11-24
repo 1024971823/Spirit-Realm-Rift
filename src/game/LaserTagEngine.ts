@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { soundEngine } from '../audio/soundEngine';
+import type { TacticalPing, TacticalPingKind } from '../shared/social';
 import type { EconomyNoticePayload, GameNetworkClient } from '../net/clientSocket';
 import {
   AMMO_PACKS,
@@ -60,6 +61,7 @@ import {
 } from './models';
 import { preloadAllRoboMasterTemplates } from './robomasterModel';
 import { createArenaTextures, type ProceduralTextureSet } from './textures';
+import { TACTICAL_KEYS, TACTICAL_PINGS, tacticalDirection } from './tacticalPings';
 
 const _vec3A = new THREE.Vector3();
 const _vec3B = new THREE.Vector3();
@@ -67,6 +69,18 @@ const _vec3C = new THREE.Vector3();
 const _mat4 = new THREE.Matrix4();
 const _quat = new THREE.Quaternion();
 const VENT_COOLDOWN_MS = 1600;
+
+function isEditable(target: EventTarget | null): boolean {
+  return target instanceof Element && !!target.closest('input,textarea,select,[contenteditable]:not([contenteditable="false"])');
+}
+
+type TacticalMenu = {
+  source: 'keyboard' | 'gamepad';
+  kind: TacticalPingKind | 'none';
+  dx: number;
+  dy: number;
+  cursor: { x: number; y: number } | null;
+};
 
 export interface NearbyOreHudInfo {
   id: string;
@@ -110,6 +124,8 @@ export interface HudLiveState {
   gamepadName: string | null;
   playerPos: Vec3;
   playerYaw: number;
+  tacticalMenu?: TacticalPingKind | 'none';
+  tacticalPings?: TacticalPing[];
 }
 
 interface PooledParticle {
@@ -257,6 +273,10 @@ export class LaserTagEngine {
   private lastPointerY = 0;
   private pointerLocked = false;
   private gamepadName: string | null = null;
+  private gamepadPingHeld = false;
+  private tacticalMenu: TacticalMenu | null = null;
+  private tacticalPings = new Map<string, { ping: TacticalPing; marker: THREE.Group }>();
+  private tacticalBlockedIds = new Set<string>();
 
   private cachedColliders: AabbCollider[] = [];
   private cachedCollidersKey = '';
@@ -401,6 +421,8 @@ export class LaserTagEngine {
     const prev = this.phase;
     if (prev === phase) return;
     this.phase = phase;
+    this.closeTacticalMenu();
+    if (phase === 'title' || phase === 'gameover') this.clearTacticalPings();
     this.keys.clear();
     this.mouseDown = false;
     this.adsActive = false;
@@ -420,6 +442,8 @@ export class LaserTagEngine {
   }
 
   syncToRoomJoin(snap: MatchSnapshot): void {
+    this.closeTacticalMenu();
+    this.clearTacticalPings();
     this.heat = 0;
     this.overheated = false;
     this.gadgetCooldown = 0;
@@ -444,6 +468,10 @@ export class LaserTagEngine {
   }
 
   setIdentity(playerId: string): void {
+    if (this.localPlayerId !== playerId) {
+      this.closeTacticalMenu();
+      this.clearTacticalPings();
+    }
     this.localPlayerId = playerId;
   }
 
@@ -569,7 +597,7 @@ export class LaserTagEngine {
     if (changed) {
       if (this.localRobotRig) {
         this.scene.remove(this.localRobotRig.root);
-        this.disposeObject3D(this.localRobotRig.root);
+        this.disposeRobotRig(this.localRobotRig);
       }
       this.localRobotRig = buildRoboMasterCombatantRig(
         robotClass,
@@ -596,7 +624,9 @@ export class LaserTagEngine {
   }
 
   applySnapshot(snap: MatchSnapshot): void {
-    if (snap.matchId && this.activeMatchId !== snap.matchId) {
+    if (snap.matchId !== this.activeMatchId) {
+      this.closeTacticalMenu();
+      this.clearTacticalPings();
       this.activeMatchId = snap.matchId;
       this.latestServerTick = -1;
       this.pendingInputs = [];
@@ -607,7 +637,11 @@ export class LaserTagEngine {
       if (snap.serverTick < this.latestServerTick) return;
       this.latestServerTick = snap.serverTick;
     }
+    const previousTeam = this.latestSnapshot?.players.find((p) => p.id === this.localPlayerId)?.team;
+    const local = snap.players.find((p) => p.id === this.localPlayerId);
     this.latestSnapshot = snap;
+    if (!local?.alive || snap.phase !== 'active') this.closeTacticalMenu();
+    if (!local || local.team !== previousTeam || snap.phase !== 'active') this.clearTacticalPings();
     if (snap.mapId !== this.currentMapId) {
       this.buildArena(snap.mapId);
     }
@@ -725,7 +759,7 @@ export class LaserTagEngine {
       ) {
         if (actor) {
           this.scene.remove(actor.rig.root);
-          this.disposeObject3D(actor.rig.root);
+          this.disposeRobotRig(actor.rig);
         }
         const rig = buildRoboMasterCombatantRig(
           p.robotClass,
@@ -802,12 +836,109 @@ export class LaserTagEngine {
     for (const [id, actor] of this.remoteActors.entries()) {
       if (!seenIds.has(id)) {
         this.scene.remove(actor.rig.root);
-        this.disposeObject3D(actor.rig.root);
+        this.disposeRobotRig(actor.rig);
         this.remoteActors.delete(id);
       }
     }
 
     this.ensureLocalRobotRig();
+  }
+
+  showTacticalPing(ping: TacticalPing): void {
+    const snapshot = this.latestSnapshot;
+    const local = snapshot?.players.find((player) => player.id === this.localPlayerId);
+    if (!local || !snapshot?.matchId || snapshot.matchId !== ping.matchId || !this.isTeamMatch(snapshot) ||
+        snapshot.phase !== 'active' || local.team !== ping.team || this.tacticalBlockedIds.has(ping.playerId) ||
+        !Object.hasOwn(TACTICAL_PINGS, ping.kind) || ping.expiresAt <= Date.now() ||
+        ![ping.position.x, ping.position.y, ping.position.z, ping.expiresAt].every(Number.isFinite)) return;
+    if ((this.tacticalPings.get(ping.playerId)?.ping.expiresAt ?? 0) >= ping.expiresAt) return;
+
+    this.removeTacticalPing(ping.playerId);
+    const marker = new THREE.Group();
+    marker.name = 'tactical-ping';
+    marker.position.set(ping.position.x, ping.position.y, ping.position.z);
+    const mat = new THREE.MeshBasicMaterial({ color: TACTICAL_PINGS[ping.kind].color });
+    if (ping.kind === 'support') {
+      const horizontal = new THREE.Mesh(new THREE.BoxGeometry(0.65, 0.18, 0.18), mat);
+      const vertical = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.65, 0.18), mat);
+      horizontal.position.y = vertical.position.y = 0.85;
+      marker.add(horizontal, vertical);
+    } else {
+      const geometry = ping.kind === 'danger'
+        ? new THREE.ConeGeometry(0.34, 0.62, 3)
+        : new THREE.OctahedronGeometry(ping.kind === 'rally' ? 0.36 : 0.3);
+      const badge = new THREE.Mesh(geometry, mat);
+      if (ping.kind === 'mine') badge.scale.y = 0.65;
+      badge.position.y = 0.85;
+      marker.add(badge);
+    }
+    const stem = new THREE.Mesh(new THREE.CylinderGeometry(0.024, 0.024, 0.55, 5), mat);
+    stem.position.y = 0.28;
+    marker.add(stem);
+    this.scene.add(marker);
+    this.tacticalPings.set(ping.playerId, { ping, marker });
+    this.emitHudState();
+  }
+
+  setTacticalBlockedIds(ids: readonly string[]): void {
+    this.tacticalBlockedIds = new Set(ids);
+    let changed = false;
+    for (const playerId of this.tacticalPings.keys()) {
+      if (this.tacticalBlockedIds.has(playerId)) {
+        this.removeTacticalPing(playerId);
+        changed = true;
+      }
+    }
+    if (changed) this.emitHudState();
+  }
+
+  private removeTacticalPing(playerId: string): void {
+    const entry = this.tacticalPings.get(playerId);
+    if (!entry) return;
+    this.scene.remove(entry.marker);
+    this.disposeObject3D(entry.marker);
+    this.tacticalPings.delete(playerId);
+  }
+
+  private clearTacticalPings(): void {
+    for (const playerId of this.tacticalPings.keys()) this.removeTacticalPing(playerId);
+  }
+
+  private isTeamMatch(snapshot: MatchSnapshot): boolean {
+    return snapshot.mode !== 'ffa';
+  }
+
+  private openTacticalMenu(source: TacticalMenu['source']): boolean {
+    if (this.tacticalMenu) return false;
+    const snap = this.latestSnapshot;
+    if (this.phase !== 'playing' || !snap?.matchId || snap.phase !== 'active' ||
+        !this.isTeamMatch(snap) || !snap.players.some((player) => player.id === this.localPlayerId && player.alive) ||
+        isEditable(document.activeElement)) return false;
+    this.tacticalMenu = { source, kind: 'none', dx: 0, dy: 0, cursor: null };
+    this.targetYaw = this.yaw;
+    this.targetPitch = this.pitch;
+    this.pendingLookDx = this.pendingLookDy = 0;
+    this.mouseDown = this.draggingLook = this.adsActive = this.gamepadAds = this.wantsDash = false;
+    this.keys.clear();
+    this.localMiningActive = false;
+    this.emitHudState();
+    return true;
+  }
+
+  private selectTacticalKind(kind: TacticalPingKind): void {
+    if (!this.tacticalMenu || this.tacticalMenu.kind === kind) return;
+    this.tacticalMenu.kind = kind;
+    this.emitHudState();
+  }
+
+  private closeTacticalMenu(send = false): void {
+    const menu = this.tacticalMenu;
+    if (!menu) return;
+    this.tacticalMenu = null;
+    if (send && menu.kind !== 'none' && !isEditable(document.activeElement)) {
+      this.sendAction('player:ping', { kind: menu.kind, yaw: this.yaw, pitch: this.pitch });
+    }
+    this.emitHudState();
   }
 
   spawnBeamVisual(beam: BeamVisualEvent): void {
@@ -946,7 +1077,7 @@ export class LaserTagEngine {
 
   private sendAction(type: string, extra: Record<string, unknown> = {}): boolean {
     const matchId = this.latestSnapshot?.matchId;
-    if (this.phase !== 'playing' || !matchId || this.latestSnapshot?.phase !== 'active' ||
+    if (this.phase !== 'playing' || this.tacticalMenu || !matchId || this.latestSnapshot?.phase !== 'active' ||
         !this.latestSnapshot.players.some((p) => p.id === this.localPlayerId && p.alive)) return false;
     return this.network.send(type, { ...extra, matchId, actionSeq: this.nextActionSeq++ });
   }
@@ -972,6 +1103,11 @@ export class LaserTagEngine {
       );
     }
     return this.cachedColliders;
+  }
+
+  private disposeRobotRig(rig: RoboMasterCombatantRig): void {
+    rig.disposeModelLoad();
+    this.disposeObject3D(rig.root);
   }
 
   private disposeObject3D(root: THREE.Object3D): void {
@@ -1009,12 +1145,12 @@ export class LaserTagEngine {
     }
     for (const actor of this.remoteActors.values()) {
       this.scene.remove(actor.rig.root);
-      this.disposeObject3D(actor.rig.root);
+      this.disposeRobotRig(actor.rig);
     }
     this.remoteActors.clear();
     if (this.localRobotRig) {
       this.scene.remove(this.localRobotRig.root);
-      this.disposeObject3D(this.localRobotRig.root);
+      this.disposeRobotRig(this.localRobotRig);
       this.localRobotRig = null;
       this.localRigMeta = null;
     }
@@ -1446,49 +1582,58 @@ export class LaserTagEngine {
     let gpMoveZ = 0;
     let gpFire = false;
     this.gamepadAds = false;
-    if (this.controller.gamepadEnabled && navigator.getGamepads) {
-      const pads = navigator.getGamepads();
-      const gp = pads.find((p) => p && p.connected);
-      if (gp) {
-        this.gamepadName = gp.id.slice(0, 28);
-        const ldz = this.controller.leftStickDeadzone;
-        const rdz = this.controller.rightStickDeadzone;
-        const lx = Math.abs(gp.axes[0] || 0) > ldz ? gp.axes[0] : 0;
-        const ly = Math.abs(gp.axes[1] || 0) > ldz ? gp.axes[1] : 0;
-        const rx = Math.abs(gp.axes[2] || 0) > rdz ? gp.axes[2] : 0;
-        const ry = Math.abs(gp.axes[3] || 0) > rdz ? gp.axes[3] : 0;
+    const gp = this.controller.gamepadEnabled && navigator.getGamepads
+      ? navigator.getGamepads().find((p) => p && p.connected)
+      : null;
+    if (gp) {
+      this.gamepadName = gp.id.slice(0, 28);
+      const pingHeld = gp.mapping === 'standard' && !!gp.buttons[13]?.pressed;
+      const padWasSelecting = this.tacticalMenu?.source === 'gamepad';
+      if (pingHeld && !this.gamepadPingHeld) this.openTacticalMenu('gamepad');
+      if (!pingHeld && padWasSelecting) this.closeTacticalMenu(true);
+      this.gamepadPingHeld = pingHeld;
 
-        gpMoveX = lx;
-        gpMoveZ = ly;
-        this.targetYaw -= rx * this.controller.gamepadSensitivity * dt;
+      const ldz = this.controller.leftStickDeadzone;
+      const rdz = this.controller.rightStickDeadzone;
+      const rx = gp.axes[2] || 0;
+      const ry = gp.axes[3] || 0;
+      if (this.tacticalMenu?.source === 'gamepad' && Math.hypot(rx, ry) > Math.max(0.4, rdz)) {
+        this.selectTacticalKind(tacticalDirection(rx, ry));
+      } else if (!this.tacticalMenu && !padWasSelecting) {
+        gpMoveX = Math.abs(gp.axes[0] || 0) > ldz ? gp.axes[0] : 0;
+        gpMoveZ = Math.abs(gp.axes[1] || 0) > ldz ? gp.axes[1] : 0;
+        this.targetYaw -= (Math.abs(rx) > rdz ? rx : 0) * this.controller.gamepadSensitivity * dt;
         const ySign = this.controller.invertY ? 1 : -1;
         this.targetPitch = THREE.MathUtils.clamp(
-          this.targetPitch + ry * ySign * this.controller.gamepadSensitivity * 0.75 * dt,
+          this.targetPitch + (Math.abs(ry) > rdz ? ry : 0) * ySign * this.controller.gamepadSensitivity * 0.75 * dt,
           -0.95,
           0.95,
         );
 
-        const rtVal = gp.buttons[7]?.value ?? 0;
-        const ltVal = gp.buttons[6]?.value ?? 0;
-        gpFire = rtVal > this.controller.triggerThreshold;
-        this.gamepadAds = ltVal > this.controller.triggerThreshold;
+        gpFire = (gp.buttons[7]?.value ?? 0) > this.controller.triggerThreshold;
+        this.gamepadAds = (gp.buttons[6]?.value ?? 0) > this.controller.triggerThreshold;
         if (gp.buttons[1]?.pressed) this.triggerDash();
         if (gp.buttons[3]?.pressed) this.triggerClassSkill();
         if (gp.buttons[5]?.pressed) this.triggerGadget();
-      } else {
-        this.gamepadName = null;
       }
+    } else {
+      this.gamepadName = null;
+      this.gamepadPingHeld = false;
+      if (this.tacticalMenu?.source === 'gamepad') this.closeTacticalMenu();
     }
 
     if (!alive) {
+      this.closeTacticalMenu();
       this.localMiningActive = false;
       this.nearbyOreNode = null;
       return;
     }
 
     // Keyboard turn fallback
-    if (this.keys.has('ArrowLeft')) this.targetYaw += 2.1 * dt;
-    if (this.keys.has('ArrowRight')) this.targetYaw -= 2.1 * dt;
+    if (!this.tacticalMenu) {
+      if (this.keys.has('ArrowLeft')) this.targetYaw += 2.1 * dt;
+      if (this.keys.has('ArrowRight')) this.targetYaw -= 2.1 * dt;
+    }
 
     // Movement vector
     let forwardInput =
@@ -1652,7 +1797,7 @@ export class LaserTagEngine {
       if (!Number.isFinite(this.targetPitch)) this.targetPitch = this.pitch;
 
       // Apply accumulated pointer deltas smoothly every frame (prevents mouse-polling beat stutter)
-      if (this.phase === 'playing') {
+      if (this.phase === 'playing' && !this.tacticalMenu) {
         if (this.pendingLookDx !== 0 || this.pendingLookDy !== 0) {
           const sens =
             0.0022 *
@@ -1814,6 +1959,14 @@ export class LaserTagEngine {
       }
     }
 
+      if (this.tacticalPings.size) {
+        const nowWall = Date.now();
+        for (const [id, { ping, marker }] of this.tacticalPings) {
+          if (nowWall >= ping.expiresAt) this.removeTacticalPing(id);
+          else marker.rotation.y += dt * 1.8;
+        }
+      }
+
       if (!this.contextLost) {
         if (this.needsShaderCompile && !this.isSoftwareGl && now - this.lastShaderCompileMs > 250) {
           this.needsShaderCompile = false;
@@ -1904,6 +2057,8 @@ export class LaserTagEngine {
       gamepadName: this.gamepadName,
       playerPos: { x: this.playerPos.x, y: this.playerPos.y, z: this.playerPos.z },
       playerYaw: this.yaw,
+      tacticalMenu: this.tacticalMenu?.kind,
+      tacticalPings: Array.from(this.tacticalPings.values(), ({ ping }) => ping),
     });
   }
 
@@ -1986,10 +2141,29 @@ export class LaserTagEngine {
   // ===========================================================================
   // Event Listeners
   // ===========================================================================
+  private onTacticalEscape = (e: KeyboardEvent) => {
+    if (e.code !== 'Escape' || !this.tacticalMenu) return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    this.closeTacticalMenu();
+  };
+
   private onKeyDown = (e: KeyboardEvent) => {
-    if (this.phase !== 'playing') return;
-    const tag = (e.target as HTMLElement)?.tagName;
-    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+    if (this.phase !== 'playing' || isEditable(e.target)) return;
+    if (e.code === 'KeyG' && !e.repeat && !e.ctrlKey && !e.altKey && !e.metaKey &&
+        this.openTacticalMenu('keyboard')) {
+      e.preventDefault();
+      return;
+    }
+    if (this.tacticalMenu) {
+      const kind = TACTICAL_KEYS[e.code];
+      if (this.tacticalMenu.source === 'keyboard' && kind) {
+        e.preventDefault();
+        this.tacticalMenu.dx = this.tacticalMenu.dy = 0;
+        this.selectTacticalKind(kind);
+      }
+      return;
+    }
 
     const b = this.controller.bindings;
     if (!this.keys.has(e.code)) {
@@ -2032,13 +2206,17 @@ export class LaserTagEngine {
 
   private onKeyUp = (e: KeyboardEvent) => {
     this.keys.delete(e.code);
+    if (e.code === 'KeyG' && this.tacticalMenu?.source === 'keyboard') {
+      e.preventDefault();
+      this.closeTacticalMenu(true);
+    }
     if (this.matchesBinding(e, this.controller.bindings.voicePtt, ['KeyV'])) {
       this.callbacks.onVoicePttChange(false);
     }
   };
 
   private onMouseDown = (e: MouseEvent) => {
-    if (this.phase !== 'playing') return;
+    if (this.phase !== 'playing' || this.tacticalMenu) return;
     if (e.target !== this.renderer.domElement) return;
     if (!this.pointerLocked) {
       this.requestPointerLock();
@@ -2069,6 +2247,26 @@ export class LaserTagEngine {
   private onPointerMove = (e: PointerEvent) => {
     if (this.phase !== 'playing') return;
 
+    const menu = this.tacticalMenu;
+    if (menu) {
+      if (menu.source === 'keyboard') {
+        const dx = e.movementX || (!this.pointerLocked && menu.cursor ? e.clientX - menu.cursor.x : 0);
+        const dy = e.movementY || (!this.pointerLocked && menu.cursor ? e.clientY - menu.cursor.y : 0);
+        menu.cursor = { x: e.clientX, y: e.clientY };
+        if (Math.abs(dx) <= 220 && Math.abs(dy) <= 220) {
+          menu.dx += dx;
+          menu.dy += dy;
+          const distance = Math.hypot(menu.dx, menu.dy);
+          if (distance > 12) this.selectTacticalKind(tacticalDirection(menu.dx, menu.dy));
+          if (distance > 36) {
+            menu.dx *= 36 / distance;
+            menu.dy *= 36 / distance;
+          }
+        }
+      }
+      return;
+    }
+
     if (this.pointerLocked) {
       const mx = e.movementX;
       const my = e.movementY;
@@ -2095,11 +2293,17 @@ export class LaserTagEngine {
 
   private onPointerLockChange = () => {
     this.pointerLocked = document.pointerLockElement === this.renderer.domElement;
+    if (!this.pointerLocked) this.closeTacticalMenu();
     this.pendingLookDx = 0;
     this.pendingLookDy = 0;
   };
 
+  private onTacticalFocus = (e: FocusEvent) => {
+    if (isEditable(e.target)) this.closeTacticalMenu();
+  };
+
   private onWindowBlur = () => {
+    this.closeTacticalMenu();
     this.keys.clear();
     this.mouseDown = false;
     this.adsActive = false;
@@ -2129,6 +2333,7 @@ export class LaserTagEngine {
   };
 
   private bindEvents(): void {
+    window.addEventListener('keydown', this.onTacticalEscape, true);
     window.addEventListener('keydown', this.onKeyDown);
     window.addEventListener('keyup', this.onKeyUp);
     window.addEventListener('mousedown', this.onMouseDown);
@@ -2137,6 +2342,7 @@ export class LaserTagEngine {
     window.addEventListener('contextmenu', this.onContextMenu);
     window.addEventListener('blur', this.onWindowBlur);
     window.addEventListener('resize', this.onResize);
+    document.addEventListener('focusin', this.onTacticalFocus);
     document.addEventListener('pointerlockchange', this.onPointerLockChange);
     document.addEventListener('visibilitychange', this.onWindowBlur);
     this.renderer.domElement.addEventListener('webglcontextlost', this.onWebGLContextLost, false);
@@ -2145,8 +2351,11 @@ export class LaserTagEngine {
 
   dispose(): void {
     this.disposed = true;
+    this.tacticalMenu = null;
+    this.clearTacticalPings();
     cancelAnimationFrame(this.frameId);
     clearTimeout(this.frameId);
+    window.removeEventListener('keydown', this.onTacticalEscape, true);
     window.removeEventListener('keydown', this.onKeyDown);
     window.removeEventListener('keyup', this.onKeyUp);
     window.removeEventListener('mousedown', this.onMouseDown);
@@ -2155,17 +2364,18 @@ export class LaserTagEngine {
     window.removeEventListener('contextmenu', this.onContextMenu);
     window.removeEventListener('blur', this.onWindowBlur);
     window.removeEventListener('resize', this.onResize);
+    document.removeEventListener('focusin', this.onTacticalFocus);
     document.removeEventListener('pointerlockchange', this.onPointerLockChange);
     document.removeEventListener('visibilitychange', this.onWindowBlur);
     this.renderer.domElement.removeEventListener('webglcontextlost', this.onWebGLContextLost, false);
     this.renderer.domElement.removeEventListener('webglcontextrestored', this.onWebGLContextRestored, false);
     this.disposeObject3D(this.arenaGroup);
     if (this.localRobotRig) {
-      this.disposeObject3D(this.localRobotRig.root);
+      this.disposeRobotRig(this.localRobotRig);
       this.localRobotRig = null;
     }
     for (const actor of this.remoteActors.values()) {
-      this.disposeObject3D(actor.rig.root);
+      this.disposeRobotRig(actor.rig);
     }
     this.remoteActors.clear();
     this.particleMesh.geometry.dispose();

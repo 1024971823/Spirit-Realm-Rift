@@ -1,4 +1,5 @@
-import type { AmmoPackId, BeamVisualEvent, GameModeId, MapId, MatchSnapshot } from '../shared/types';
+import type { AmmoPackId, BeamVisualEvent, GameModeId, MapId, MatchSnapshot, TeamId } from '../shared/types';
+import type { PartyView, SocialInvite, TacticalPing } from '../shared/social';
 
 export interface ChatMessage {
   id: string;
@@ -42,8 +43,21 @@ export interface RoomView extends RoomSettings {
   isPrivate: boolean;
   minPlayers?: number;
   phase: 'waiting' | 'active' | 'ended';
-  members: { id: string; callsign: string; connected: boolean }[];
+  members: { id: string; callsign: string; connected: boolean; team: TeamId; ready: boolean }[];
+  version: number;
+  countdownEndsAt: number | null;
+  canStart: boolean;
   matchId?: string | null;
+}
+
+export interface RoomPreview {
+  roomId: string;
+  name?: string;
+  mapId?: MapId;
+  mode?: GameModeId;
+  playerCount?: number;
+  available: boolean;
+  error?: string;
 }
 
 export interface MatchOffer {
@@ -58,6 +72,8 @@ export interface SessionView {
   queuedAt?: number | null;
   offer?: MatchOffer | null;
   summary?: MatchSummaryPayload | null;
+  party?: PartyView | null;
+  invites?: SocialInvite[];
   message?: string;
 }
 
@@ -75,6 +91,9 @@ export interface ClientSocketListeners {
   onSession?: (view: SessionView) => void;
   onError?: (error: { action?: string; code?: string }) => void;
   onSnapshot?: (snap: MatchSnapshot) => void;
+  onRoomPreview?: (preview: RoomPreview) => void;
+  onSocialInviteSent?: () => void;
+  onTacticalPing?: (ping: TacticalPing) => void;
   onBeam?: (beam: BeamVisualEvent) => void;
   onHitConfirm?: (data: { targetId: string; damage: number; killed: boolean }) => void;
   onBarrierShatter?: (id: string) => void;
@@ -95,7 +114,7 @@ export class GameNetworkClient {
   private lastPongAt = 0;
   private disposed = false;
   private pendingOpen = 0;
-  private clockOffsetMs = 0;
+  private clockOffsetMs: number | undefined;
   private retryCount = 0;
 
   setListeners(listeners: ClientSocketListeners): void {
@@ -108,6 +127,7 @@ export class GameNetworkClient {
     const url = new URL('/ws', window.location.href);
     url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
     const ws = new WebSocket(url);
+    this.clockOffsetMs = undefined;
     this.ws = ws;
     this.pendingOpen = window.setTimeout(() => ws.close(), 8000);
 
@@ -135,22 +155,37 @@ export class GameNetworkClient {
       const payload = (msg.payload || {}) as ServerPayload;
       switch (msg.type) {
         case 'pong': {
-          this.lastPongAt = Date.now();
-          const rtt = Date.now() - Number(payload.clientTime || Date.now());
-          if (typeof payload.serverTime === 'number' && rtt >= 0) this.clockOffsetMs = payload.serverTime + rtt / 2 - Date.now();
+          const now = this.lastPongAt = Date.now();
+          const rtt = now - Number(payload.clientTime || now);
+          if (typeof payload.serverTime === 'number' && rtt >= 0) this.clockOffsetMs = payload.serverTime + rtt / 2 - now;
           this.listeners.onPingUpdate?.(Math.max(1, rtt));
           break;
         }
         case 'session:state': {
           this.retryCount = 0;
           const state = payload as unknown as SessionView;
-          if (state.offer) state.offer = { ...state.offer, expiresAt: state.offer.expiresAt - this.clockOffsetMs };
+          const offset = this.clockOffsetMs ?? (typeof payload.serverTime === 'number' ? payload.serverTime - Date.now() : 0);
+          if (state.offer) state.offer = { ...state.offer, expiresAt: state.offer.expiresAt - offset };
+          if (state.room?.countdownEndsAt != null) state.room = { ...state.room, countdownEndsAt: state.room.countdownEndsAt - offset };
+          if (state.invites) state.invites = state.invites.map(invite => ({ ...invite, expiresAt: invite.expiresAt - offset }));
           this.listeners.onSession?.(state);
           break;
         }
         case 'session:error':
           this.listeners.onError?.(payload);
           break;
+        case 'room:preview':
+          this.listeners.onRoomPreview?.(payload as unknown as RoomPreview);
+          break;
+        case 'social:sent':
+          this.listeners.onSocialInviteSent?.();
+          break;
+        case 'match:ping': {
+          const ping = payload as unknown as TacticalPing;
+          const offset = this.clockOffsetMs ?? (typeof payload.serverTime === 'number' ? payload.serverTime - Date.now() : 0);
+          this.listeners.onTacticalPing?.({ ...ping, expiresAt: ping.expiresAt - offset });
+          break;
+        }
         case 'room:joined':
         case 'room:reset':
           if (payload.snapshot) this.listeners.onSnapshot?.(payload.snapshot as MatchSnapshot);

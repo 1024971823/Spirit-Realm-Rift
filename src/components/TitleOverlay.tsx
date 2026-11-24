@@ -11,6 +11,7 @@ interface TitleOverlayProps {
   profile: PlayerProfile;
   connected: boolean;
   pingMs: number;
+  inviteCount?: number;
   onSelectRobotClass: (robotClass: RobotClass) => void;
   onStartMatch: () => void;
   onOpenLoadout: () => void;
@@ -24,6 +25,7 @@ export const TitleOverlay: React.FC<TitleOverlayProps> = ({
   profile,
   connected,
   pingMs,
+  inviteCount = 0,
   onSelectRobotClass,
   onStartMatch,
   onOpenLoadout,
@@ -168,7 +170,9 @@ export const TitleOverlay: React.FC<TitleOverlayProps> = ({
             onClick={onStartMatch}
             className="chamfer-btn flex items-center justify-between px-5 py-3.5 bg-amber-500 hover:bg-amber-400 active:scale-[0.99] text-slate-950 font-display font-bold text-base tracking-wider uppercase transition-colors cursor-pointer whitespace-nowrap"
           >
-            <span>{multiplayer.lobby}</span>
+            <span className="flex items-center gap-2">{multiplayer.lobby}
+              {inviteCount > 0 && <span aria-hidden="true" className="rounded-full bg-slate-950 px-2 text-xs text-amber-300">{inviteCount}</span>}
+            </span>
             <Crosshair className="w-5 h-5" />
           </button>
 

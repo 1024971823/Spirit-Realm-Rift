@@ -13,9 +13,9 @@ import { StatsModal } from './components/StatsModal';
 import { TitleOverlay } from './components/TitleOverlay';
 import { LaserTagEngine, type HudLiveState } from './game/LaserTagEngine';
 import { useI18n } from './i18n/LanguageContext';
-import { multiplayerError, MULTIPLAYER_TEXT } from './i18n/multiplayer';
+import { LOBBY_TEXT, multiplayerError, MULTIPLAYER_TEXT } from './i18n/multiplayer';
 import { ApiError, postJson, requestJson, type AccountSession } from './net/account';
-import { GameNetworkClient, type ChatMessage, type MatchSummaryPayload, type SessionView } from './net/clientSocket';
+import { GameNetworkClient, type ChatMessage, type MatchSummaryPayload, type RoomPreview, type RoomSettings, type SessionView } from './net/clientSocket';
 import { INITIAL_TEAM_CREDITS, normalizePlayerProfile } from './shared/catalog';
 import type { ControllerConfig, GamePhase, LoadoutConfig, MatchSnapshot, PlayerProfile, RobotClass } from './shared/types';
 
@@ -56,6 +56,33 @@ const INITIAL_HUD: HudLiveState = {
 
 
 type ActiveModal = 'none' | 'loadout' | 'lobby' | 'stats' | 'settings' | 'moderation';
+type InviteJoin = { code: string; lastCommand?: string };
+const INVITE_KEY = 'prism-room-invite';
+function normalizeInviteCode(value: string) {
+  return value.trim().toUpperCase().slice(0, 24) || undefined;
+}
+function inviteFromLocation(): string | undefined {
+  const code = new URLSearchParams(window.location.search).get('invite');
+  if (code !== null) return normalizeInviteCode(code);
+  try {
+    return normalizeInviteCode(sessionStorage.getItem(INVITE_KEY) ?? '');
+  } catch {
+    return undefined;
+  }
+}
+function persistInvite(code?: string) {
+  try {
+    if (code) sessionStorage.setItem(INVITE_KEY, code);
+    else sessionStorage.removeItem(INVITE_KEY);
+  } catch { /* The URL and React state still work when storage is unavailable. */ }
+  const url = new URL(window.location.href);
+  if (url.searchParams.has('invite') && url.searchParams.get('invite') !== code) {
+    if (code) url.searchParams.set('invite', code);
+    else url.searchParams.delete('invite');
+    window.history.replaceState(window.history.state, '', url);
+  }
+}
+
 const matchKey = (id: string) => 'prism-latest-match:' + id;
 function rememberedMatch(id: string): string | null {
   try { return sessionStorage.getItem(matchKey(id)); } catch { return null; }
@@ -68,7 +95,11 @@ export default function App() {
   const { lang } = useI18n();
   const t = MULTIPLAYER_TEXT[lang];
   const [emailAction] = useState(accountActionFromUrl);
+  const [inviteCode, setInviteState] = useState(inviteFromLocation);
   const [account, setAccount] = useState<AccountSession | null | undefined>(emailAction ? null : undefined);
+  useEffect(() => { persistInvite(inviteCode); }, [inviteCode]);
+  const setInviteCode = useCallback((code?: string) => setInviteState(code), []);
+  const signOut = useCallback(() => setAccount(null), []);
   const [loadFailed, setLoadFailed] = useState(false);
   const checkSession = useCallback(async () => {
     setLoadFailed(false);
@@ -83,11 +114,18 @@ export default function App() {
   if (account === undefined) return <main className="grid h-full place-items-center text-slate-300">
     {loadFailed ? <div className="text-center"><p role="alert">{t.error}</p><button type="button" onClick={() => void checkSession()} className="mt-2 text-cyan-300">{t.retry}</button></div> : <p role="status">{t.loading}</p>}
   </main>;
-  if (account === null) return <AccountPanel onSignIn={setAccount} />;
-  return <Arena key={account.playerId} playerId={account.playerId} moderator={account.moderator} onSignedOut={() => setAccount(null)} />;
+  if (account === null) return <AccountPanel onSignIn={setAccount} inviteCode={inviteCode} onDismissInvite={setInviteCode} />;
+  return <Arena key={account.playerId} playerId={account.playerId} moderator={account.moderator} onSignedOut={signOut}
+    inviteCode={inviteCode} setInviteCode={setInviteCode} />;
 }
 
-function Arena({ playerId, moderator, onSignedOut }: { playerId: string; moderator?: boolean; onSignedOut: () => void }) {
+function Arena({ playerId, moderator, onSignedOut, inviteCode, setInviteCode }: {
+  playerId: string;
+  moderator?: boolean;
+  onSignedOut: () => void;
+  inviteCode?: string;
+  setInviteCode: (code?: string) => void;
+}) {
   const { lang } = useI18n();
   const t = MULTIPLAYER_TEXT[lang];
   const langRef = useRef(lang);
@@ -96,8 +134,8 @@ function Arena({ playerId, moderator, onSignedOut }: { playerId: string; moderat
   const networkRef = useRef<GameNetworkClient | null>(null);
   const [phase, setPhaseState] = useState<GamePhase>('title');
   const phaseRef = useRef<GamePhase>('title');
-  const [activeModal, setActiveModal] = useState<ActiveModal>('none');
-  const activeModalRef = useRef<ActiveModal>('none');
+  const [activeModal, setActiveModal] = useState<ActiveModal>(inviteCode ? 'lobby' : 'none');
+  const activeModalRef = useRef<ActiveModal>(inviteCode ? 'lobby' : 'none');
   const [profile, setProfile] = useState<PlayerProfile>(() => normalizePlayerProfile(null, playerId));
   const profileRef = useRef(profile);
   const [snapshot, setSnapshot] = useState<MatchSnapshot | null>(null);
@@ -109,9 +147,24 @@ function Arena({ playerId, moderator, onSignedOut }: { playerId: string; moderat
   const [pingMs, setPingMs] = useState(0);
   const [view, setView] = useState<SessionView>({});
   const viewRef = useRef<SessionView>({});
+  const [preview, setPreview] = useState<RoomPreview>();
+  const inviteCodeRef = useRef(inviteCode);
+  const [joinAttempt, setJoinAttempt] = useState<InviteJoin>();
+  const joinAttemptRef = useRef<InviteJoin | undefined>(undefined);
+  const updateJoinAttempt = useCallback((attempt?: InviteJoin) => {
+    joinAttemptRef.current = attempt;
+    setJoinAttempt(attempt);
+  }, []);
+  const clearInvite = useCallback(() => {
+    inviteCodeRef.current = undefined;
+    setInviteCode();
+    setPreview(undefined);
+    updateJoinAttempt();
+  }, [setInviteCode, updateJoinAttempt]);
   const [muted, setMuted] = useState(false);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [blockedIds, setBlockedIds] = useState<string[]>([]);
+  const blockedIdsRef = useRef(blockedIds);
   const [matchSummary, setMatchSummary] = useState<MatchSummaryPayload | null>(null);
   const [notice, setNotice] = useState('');
   const currentMatchRef = useRef<string | undefined>(undefined);
@@ -132,6 +185,10 @@ function Arena({ playerId, moderator, onSignedOut }: { playerId: string; moderat
   }, []);
   useEffect(() => { activeModalRef.current = activeModal; }, [activeModal]);
   useEffect(() => { langRef.current = lang; engineRef.current?.setLanguage(lang); }, [lang]);
+  useEffect(() => {
+    blockedIdsRef.current = blockedIds;
+    engineRef.current?.setTacticalBlockedIds(blockedIds);
+  }, [blockedIds]);
   const updateProfile = useCallback((next: PlayerProfile) => {
     profileRef.current = next;
     setProfile(next);
@@ -190,6 +247,7 @@ function Arena({ playerId, moderator, onSignedOut }: { playerId: string; moderat
         });
         engineRef.current = engine;
         engine.setLanguage(langRef.current);
+        engine.setTacticalBlockedIds(blockedIdsRef.current);
       } catch { setRendererError(true); }
     }
     let snapshotRoundId: string | undefined;
@@ -201,6 +259,7 @@ function Arena({ playerId, moderator, onSignedOut }: { playerId: string; moderat
         setConnected(open);
         if (open) return;
         setSynced(false);
+        updateJoinAttempt();
         if (phaseRef.current === 'playing' || phaseRef.current === 'paused') {
           resumePhase = phaseRef.current;
           engine?.setPhase('paused');
@@ -218,6 +277,7 @@ function Arena({ playerId, moderator, onSignedOut }: { playerId: string; moderat
         if (next.room?.phase !== 'active') setSynced(true);
         viewRef.current = next;
         setView(next);
+        if (next.room && next.room.roomId === inviteCodeRef.current) clearInvite();
         if (previous.room?.roomId !== next.room?.roomId) setChatMessages([]);
         if (next.message) setNotice(next.message);
         if (next.summary) showResult(next.summary);
@@ -240,17 +300,34 @@ function Arena({ playerId, moderator, onSignedOut }: { playerId: string; moderat
           snapshotRoundId = undefined;
           return;
         }
-        if (next.room || next.queuedAt || next.offer) {
-          if (!summaryRef.current) { setPhase('title'); setActiveModal('lobby'); }
+        if (next.room || next.queuedAt != null || next.offer || next.party) {
+          if (!summaryRef.current && phaseRef.current !== 'gameover') {
+            setPhase('title');
+            if (previous.room?.roomId !== next.room?.roomId || (!previous.party && next.party) ||
+                (previous.queuedAt == null && next.queuedAt != null)) setActiveModal('lobby');
+          }
         } else if (!summaryRef.current && phaseRef.current !== 'gameover') {
           setPhase('title');
-          if (previous.room) setActiveModal('lobby');
+          if (previous.room && activeModalRef.current === 'none') setActiveModal('lobby');
           setSnapshot(null);
           currentMatchRef.current = undefined;
           snapshotRoundId = undefined;
         }
       },
-      onError: error => setNotice(multiplayerError(langRef.current, error.code)),
+      onError: error => {
+        setNotice(multiplayerError(langRef.current, error.code));
+        if (error.action === joinAttemptRef.current?.lastCommand) updateJoinAttempt();
+        const code = inviteCodeRef.current;
+        if (error.action === 'room:preview' && code) {
+          setPreview({ roomId: code, available: false, error: error.code });
+        }
+        if (error.action === 'room:join' && code && ['room_not_found', 'room_full', 'match_locked', 'countdown_active'].includes(error.code ?? '')) {
+          setPreview(previous => ({ ...previous, roomId: code, available: false, error: error.code }));
+        }
+      },
+      onRoomPreview: details => { if (details.roomId === inviteCodeRef.current) setPreview(details); },
+      onSocialInviteSent: () => setNotice(LOBBY_TEXT[langRef.current].inviteSent),
+      onTacticalPing: ping => engine?.showTacticalPing(ping),
       onPingUpdate: setPingMs,
       onSnapshot: (snap) => {
         const room = viewRef.current.room;
@@ -304,7 +381,7 @@ function Arena({ playerId, moderator, onSignedOut }: { playerId: string; moderat
   // Network and rendering lifetime is keyed by the authenticated player ID.
   // The sign-out callback is intentionally read from the instance that started the session.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loadProfile, playerId, quickSwitch, setPhase, showResult]);
+  }, [clearInvite, loadProfile, playerId, quickSwitch, setPhase, showResult, updateJoinAttempt]);
 
   // A page refresh can occur after server settlement or while delivery is still pending.
   useEffect(() => {
@@ -333,9 +410,53 @@ function Arena({ playerId, moderator, onSignedOut }: { playerId: string; moderat
     setNotice(sent ? '' : MULTIPLAYER_TEXT[langRef.current].missingConnection);
     return sent;
   }, []);
+  const requestPreview = (rawCode: string) => {
+    const code = normalizeInviteCode(rawCode);
+    if (!code) return;
+    setPreview(undefined);
+    if (inviteCodeRef.current !== code) {
+      inviteCodeRef.current = code;
+      setInviteCode(code);
+    } else if (!send('room:preview', { roomId: code })) {
+      setPreview({ roomId: code, available: false, error: 'unavailable' });
+    }
+  };
+  useEffect(() => {
+    if (!inviteCode || !connected || !synced) return;
+    setPreview(undefined);
+    if (!send('room:preview', { roomId: inviteCode })) setPreview({ roomId: inviteCode, available: false, error: 'unavailable' });
+  }, [inviteCode, connected, synced, send]);
+
+  // A confirmed switch must wait for each server acknowledgement before joining.
+  useEffect(() => {
+    const attempt = joinAttemptRef.current;
+    if (!attempt || !connected || !synced) return;
+    if (view.room?.phase === 'active' || view.offer) {
+      setNotice(view.offer ? LOBBY_TEXT[langRef.current].resolveOffer : LOBBY_TEXT[langRef.current].finishMatch);
+      updateJoinAttempt();
+      return;
+    }
+    const command = view.room ? 'room:leave' : view.queuedAt != null ? 'queue:leave' : view.party ? 'party:leave' : 'room:join';
+    if (attempt.lastCommand === command) return;
+    attempt.lastCommand = command;
+    if (!send(command, command === 'room:join' ? { roomId: attempt.code } : {})) updateJoinAttempt();
+  }, [view, joinAttempt, connected, synced, send, updateJoinAttempt]);
+
+  useEffect(() => {
+    if (!joinAttempt) return;
+    const timer = window.setTimeout(() => {
+      if (joinAttemptRef.current === joinAttempt) {
+        updateJoinAttempt();
+        setNotice(multiplayerError(langRef.current, 'unavailable'));
+      }
+    }, 8000);
+    return () => window.clearTimeout(timer);
+  }, [joinAttempt, updateJoinAttempt]);
+
   const toggleMute = useCallback(() => setMuted(value => { soundEngine.setMuted(!value); return !value; }), []);
   useEffect(() => {
     const handleKey = (event: KeyboardEvent) => {
+      if (event.defaultPrevented) return;
       if ((event.target as HTMLElement | null)?.closest?.('input,textarea,select,button,[contenteditable]')) return;
       if (event.code === 'Escape' || event.code === 'KeyP') {
         if (activeModalRef.current !== 'none') setActiveModal('none');
@@ -374,9 +495,17 @@ function Arena({ playerId, moderator, onSignedOut }: { playerId: string; moderat
     onBlockChanged: (id, block) => setBlockedIds(ids => block ? Array.from(new Set([...ids, id])) : ids.filter(value => value !== id)),
   };
 
+  const configureRoom = (type: 'room:create' | 'room:settings', { botFill, ...settings }: RoomSettings) => {
+    send(type, { ...settings, fillBots: botFill, ...(type === 'room:settings' ? { version: view.room?.version } : {}) });
+  };
+  const roomCommand = (action: string, payload: object = {}) => {
+    if (view.room) send(action, { ...payload, version: view.room.version });
+  };
+  const inviteCount = view.invites?.filter(invite => !blockedIds.includes(invite.senderId)).length ?? 0;
+
   return <div className="relative h-full w-full overflow-hidden bg-[#0A0D12]">
     <div ref={canvasMountRef} data-testid="arena-canvas-mount" className="fixed inset-0 h-full w-full" />
-    {phase === 'title' && activeModal === 'none' && <TitleOverlay profile={profile} connected={connected && synced} pingMs={pingMs}
+    {phase === 'title' && activeModal === 'none' && <TitleOverlay profile={profile} connected={connected && synced} pingMs={pingMs} inviteCount={inviteCount + Number(Boolean(inviteCode))}
       onSelectRobotClass={quickSwitch} onStartMatch={() => setActiveModal('lobby')} onOpenLoadout={() => setActiveModal('loadout')}
       onOpenModeration={moderator ? () => setActiveModal('moderation') : undefined} onOpenStats={() => setActiveModal('stats')} onOpenSettings={() => setActiveModal('settings')} onSignOut={logout} />}
     {phase === 'playing' && activeModal === 'none' && connected && synced && <GameHud hud={hud} snapshot={snapshot} localPlayerId={playerId}
@@ -387,15 +516,22 @@ function Arena({ playerId, moderator, onSignedOut }: { playerId: string; moderat
       onResume={() => { setPhase('playing'); engineRef.current?.requestPointerLock(); }} onOpenLoadout={() => setActiveModal('loadout')}
       onOpenSettings={() => setActiveModal('settings')} onReturnToTitle={leave} />}
     {phase === 'gameover' && matchSummary && <GameOverModal summary={matchSummary} isPrivate={matchSummary.isPrivate ?? view.room?.isPrivate ?? snapshot?.isPrivate ?? false}
-      onPlayAgain={!matchSummary.isPrivate && !view.room && !snapshot?.isPrivate && connected && synced ? () => { dismissResult(); send('queue:join'); } : undefined}
+      onPlayAgain={!matchSummary.isPrivate && !view.room && !snapshot?.isPrivate && connected && synced && (!view.party || view.party.leaderId === playerId) ? () => { dismissResult(); send('queue:join'); } : undefined}
       onReturnToTitle={dismissResult} />}
     {phase === 'gameover' && !matchSummary && <div className="fixed inset-0 z-30 grid place-items-center bg-black/75 p-4">
       <section className="rounded bg-[#101926] p-6 text-center"><p role="status">{t.resultPending}</p><button type="button" className="mt-4 text-cyan-300" onClick={dismissResult}>{t.lobby}</button></section>
     </div>}
     {activeModal === 'loadout' && <LoadoutModal profile={profile} onUpdateLoadout={(loadout: LoadoutConfig) => persistProfile({ loadout })} onClose={() => setActiveModal('none')} />}
-    {activeModal === 'lobby' && <MultiplayerLobby view={view} playerId={playerId} connected={connected && synced} chat={chat} onClose={() => setActiveModal('none')}
-      onQueue={join => { send(join ? 'queue:join' : 'queue:leave'); }} onJoinRoom={code => { send('room:join', { roomId: code }); }}
-      onCreateRoom={({ botFill, ...settings }) => { send('room:create', { ...settings, fillBots: botFill }); }} onStart={() => send('room:start')} onLeave={leave} />}
+    {activeModal === 'lobby' && <MultiplayerLobby view={view} playerId={playerId} connected={connected && synced} chat={chat}
+      rendererError={rendererError} preview={preview} inviteCode={inviteCode} joining={Boolean(joinAttempt)}
+      onClose={() => setActiveModal('none')} onQueue={join => { send(join ? 'queue:join' : 'queue:leave'); }}
+      onPreview={requestPreview} onConfirmJoin={() => { if (inviteCode && preview?.available && !joinAttemptRef.current) updateJoinAttempt({ code: inviteCode }); }}
+      onDismissPreview={clearInvite} onCreateRoom={settings => configureRoom('room:create', settings)} onSettings={settings => configureRoom('room:settings', settings)}
+      onTeam={team => roomCommand('room:team', { team })} onReady={ready => roomCommand('room:ready', { ready })}
+      onStart={() => roomCommand('room:start')} onCancelStart={() => roomCommand('room:cancel')} onLeave={leave}
+      onParty={create => send(create ? 'party:create' : 'party:leave')}
+      onInvite={(kind, id) => send('social:invite', { kind, playerId: id })}
+      onRespondInvite={(id, accept) => send('social:respond', { inviteId: id, accept })} />}
     {activeModal === 'stats' && <StatsModal profile={profile} pingMs={pingMs} antiCheat={snapshot?.antiCheat} onClose={() => setActiveModal('none')} />}
     {activeModal === 'settings' && <SettingsModal profile={profile} onUpdateProfileMeta={callsign => persistProfile({ callsign })}
       onUpdateController={(controller: ControllerConfig) => persistProfile({ controller })} onClose={() => setActiveModal('none')} />}

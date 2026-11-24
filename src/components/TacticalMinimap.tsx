@@ -1,6 +1,8 @@
 import React, { useMemo } from 'react';
 import { AlertTriangle, ShieldAlert } from 'lucide-react';
 import { useI18n } from '../i18n/LanguageContext';
+import { TACTICAL_PINGS } from '../game/tacticalPings';
+import type { TacticalPing } from '../shared/social';
 import { buildMinimapFrame, type LocalPlayerPoseOverride } from '../shared/minimap';
 import type { MapDefinition, MatchSnapshot, TeamId } from '../shared/types';
 
@@ -11,6 +13,7 @@ interface TacticalMinimapProps {
   localPlayerId: string;
   localTeam: TeamId;
   localPose: LocalPlayerPoseOverride;
+  tacticalPings: readonly TacticalPing[];
   copiedCode: boolean;
   onCopyInvite: () => void;
 }
@@ -22,10 +25,11 @@ export const TacticalMinimap: React.FC<TacticalMinimapProps> = ({
   localPlayerId,
   localTeam,
   localPose,
+  tacticalPings,
   copiedCode,
   onCopyInvite,
 }) => {
-  const { t } = useI18n();
+  const { lang, t } = useI18n();
   const half = map.halfSize;
 
   const staticTerrainLayer = useMemo(() => {
@@ -409,6 +413,18 @@ export const TacticalMinimap: React.FC<TacticalMinimapProps> = ({
                     />
                   </g>
                 )}
+              </g>
+            );
+          })}
+          {tacticalPings.map((ping) => {
+            const info = TACTICAL_PINGS[ping.kind];
+            return (
+              <g key={ping.id} data-testid="minimap-tactical-ping" data-kind={ping.kind}
+                transform={`translate(${ping.position.x}, ${ping.position.z})`}>
+                <title>{ping.callsign} · {info[lang]}</title>
+                <circle r="3.3" fill="#0B1019" stroke={info.color} strokeWidth="0.8" />
+                <text y="0.1" fill={info.color} fontSize="4.7" fontWeight="bold"
+                  textAnchor="middle" dominantBaseline="central">{info.symbol}</text>
               </g>
             );
           })}

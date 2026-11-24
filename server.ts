@@ -7,6 +7,8 @@ import { createGamePool, measureTicks, type GameWorker, type TickStats } from '.
 import { fileURLToPath } from 'node:url';
 import { WebSocket, WebSocketServer } from 'ws';
 import { makeServices, type Auth, type Result } from './backend/services.ts';
+import { selectTeamClash } from './backend/teamQueue.ts';
+import type { PartyView, SocialInvite, TacticalPing } from './src/shared/social.ts';
 import { computePlayerShot, playerMotionFromSnapshot, readPlayerAim, readPlayerInput, stepPlayerMotion, type PlayerInput } from './src/shared/playerInput.ts';
 import {
   AMMO_PACKS,
@@ -73,6 +75,10 @@ const SIM_WORKER = process.env.PRISM_SIM_WORKER;
 const MATCH_MS = 180_000;
 const SEAT_MS = 60_000;
 const READY_MS = 15_000;
+const COUNTDOWN_MS = 3_000;
+const INVITE_MS = 60_000;
+const PING_COOLDOWN_MS = 2_000;
+const PING_LIFETIME_MS = 6_000;
 const ROOM_SIZE = 6;
 const PRIVATE_ROOM_MIN_PLAYERS = process.env.PUBLIC_ACCESS !== '1' && process.env.ALLOW_SOLO_PLAYTEST === '1' ? 1 : 2;
 const TICK_MS = 50;
@@ -106,6 +112,7 @@ interface ServerCombatant extends CombatantSnapshot {
   dashPending?: boolean;
   lastReceivedInputSeq?: number;
   lastActionSeq?: number;
+  lastPingAt?: number;
   ads?: boolean;
   ventAtMs?: number;
   phaseDashPending?: boolean;
@@ -138,6 +145,8 @@ interface ServerRoom {
   matchId: string | null;
   serverTick: number;
   starting: boolean;
+  version: number;
+  countdownEndsAt: number | null;
   terminating?: boolean;
   startedAtMs: number;
   durationSec: number;
@@ -170,6 +179,7 @@ type GameEvent =
   | { type: 'metrics'; stats: TickStats }
   | { type: 'broadcast'; matchId: string; snapshot: boolean; wire: string }
   | { type: 'direct'; matchId: string; playerId: string; wire: string }
+  | { type: 'ping'; matchId: string; ping: TacticalPing }
   | { type: 'finish'; matchId: string; room: ServerRoom; adjudication?: Adjudication };
 const matches = new Map<string, { room: ServerRoom; worker: GameWorker; snapshotWire?: string }>();
 let gamePool: ReturnType<typeof createGamePool<GameCommand, GameEvent>>;
@@ -179,6 +189,7 @@ interface Member {
   profile: PlayerProfile;
   team: TeamId;
   joinedAt: number;
+  ready: boolean;
   detachedAt?: number;
   forfeited?: boolean;
 }
@@ -196,16 +207,36 @@ interface Connection {
   alive: boolean;
   playUntil: number;
 }
-interface QueueEntry { id: string; queuedAt: number; order: number; profile: PlayerProfile }
-interface ReadyCheck { id: string; entries: QueueEntry[]; accepted: Set<string>; deadline: number; starting: boolean }
+interface QueueEntry { id: string; queuedAt: number; order: number; partyId?: string }
+interface ReadyCheck {
+  id: string;
+  entries: QueueEntry[];
+  teams: Map<string, TeamId>;
+  accepted: Set<string>;
+  withdrawn: Set<string>;
+  deadline: number;
+  starting: boolean;
+}
+interface Party {
+  id: string;
+  leaderId: string;
+  members: Map<string, { callsign: string; detachedAt?: number }>;
+}
+interface PendingInvite extends SocialInvite {
+  contextId: string;
+}
 const connections = new Map<string, Connection>();
 const rooms = new Map<string, ServerRoom>();
 const roomByPlayer = new Map<string, ServerRoom>();
 const queue = new Map<string, QueueEntry>();
 const pendingReady = new Map<string, ReadyCheck>();
 const readyByPlayer = new Map<string, ReadyCheck>();
+const partyByPlayer = new Map<string, Party>();
+const parties = new Map<string, Party>();
+const invitesByTarget = new Map<string, Map<string, PendingInvite>>();
 let queueOrder = 0;
 let nextPublicMap = 0;
+let roomVersion = 0;
 
 function generateRoomCode(): string {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -277,6 +308,8 @@ function createRoom(options: Partial<LobbyConfig> & { publicMatch?: boolean; fil
     matchId: null,
     serverTick: 0,
     starting: false,
+    version: ++roomVersion,
+    countdownEndsAt: null,
     startedAtMs: now,
     durationSec: MATCH_MS / 1000,
     scoreLimit: mode === 'ffa' ? 15 : 25,
@@ -1126,6 +1159,39 @@ function gameplay(room: ServerRoom, playerId: string, type: string, payload: Rec
   }
   const sendDirect = (wire: string) => emitGame({ type: 'direct', matchId: room.matchId!, playerId, wire });
   switch (type) {
+    case 'player:ping': {
+      const { kind, yaw, pitch } = payload;
+      const now = Date.now();
+      if (room.config.mode === 'ffa' || now - (p.lastPingAt ?? 0) < PING_COOLDOWN_MS ||
+          (kind !== 'rally' && kind !== 'danger' && kind !== 'mine' && kind !== 'support')) return;
+      const aim = readPlayerAim({ yaw, pitch, ads: p.ads ?? false });
+      if (!aim) return;
+      const map = MAPS[room.config.mapId];
+      let position = { x: p.x, y: p.y, z: p.z };
+      if (kind !== 'support') {
+        const colliders = getArenaActiveColliders(map, [...room.barriers.values()]);
+        let distance = 40;
+        const { origin, dir } = computePlayerShot(p, aim, distance, colliders, [], map.halfSize);
+        for (const collider of colliders) {
+          const hit = rayIntersectAabb(origin, dir, collider, distance);
+          if (hit !== null) distance = Math.min(distance, hit);
+        }
+        if (dir.y < 0) distance = Math.min(distance, -origin.y / dir.y);
+        for (const axis of ['x', 'z'] as const) {
+          if (dir[axis] === 0) continue;
+          const bound = Math.sign(dir[axis]) * map.halfSize;
+          distance = Math.min(distance, (bound - origin[axis]) / dir[axis]);
+        }
+        distance = Math.max(0, distance);
+        position = { x: origin.x + dir.x * distance, y: Math.max(0, origin.y + dir.y * distance), z: origin.z + dir.z * distance };
+      }
+      p.lastPingAt = now;
+      emitGame({ type: 'ping', matchId: room.matchId, ping: {
+        id: randomUUID(), matchId: room.matchId, playerId, callsign: p.callsign,
+        team: p.team, kind, position, expiresAt: now + PING_LIFETIME_MS,
+      } });
+      break;
+    }
     case 'player:input': {
       const input = readPlayerInput(payload);
       if (!input || input.seq <= (p.lastReceivedInputSeq ?? 0)) return;
@@ -1457,11 +1523,27 @@ function isCurrent(conn: Connection): boolean {
 }
 
 function online(member: Member): boolean {
-  return !member.forfeited && member.detachedAt === undefined && connections.has(member.id);
+  const conn = connections.get(member.id);
+  return !member.forfeited && member.detachedAt === undefined && !!conn && isCurrent(conn);
 }
 
 function minimumPlayers(room: ServerRoom): number {
   return room.publicMatch ? ROOM_SIZE : PRIVATE_ROOM_MIN_PLAYERS;
+}
+
+function customStartError(room: ServerRoom): string | undefined {
+  const members = [...room.members.values()].filter(member => !member.forfeited);
+  if (members.filter(online).length < minimumPlayers(room)) return 'need_two_players';
+  if (members.some(member => !online(member) || !member.ready)) return 'all_must_be_ready';
+  if (room.config.mode !== 'ffa' && !room.fillBots && members.length > 1 &&
+      !members.some(member => member.team !== members[0].team)) return 'need_both_teams';
+}
+
+function invalidateCustomRoom(room: ServerRoom, clearReady = true): void {
+  if (room.publicMatch || room.phase !== 'waiting') return;
+  room.version = ++roomVersion;
+  room.countdownEndsAt = null;
+  if (clearReady) for (const member of room.members.values()) member.ready = false;
 }
 
 function roomView(room: ServerRoom) {
@@ -1476,7 +1558,10 @@ function roomView(room: ServerRoom) {
     fillBots: room.fillBots,
     botFill: room.fillBots,
     matchId: room.matchId,
-    members: members.map(m => ({ id: m.id, callsign: m.profile.callsign, online: online(m), connected: online(m), team: m.team })),
+    version: room.version,
+    countdownEndsAt: room.countdownEndsAt,
+    canStart: !room.publicMatch && room.phase === 'waiting' && !room.starting && room.countdownEndsAt === null && !customStartError(room),
+    members: members.map(m => ({ id: m.id, callsign: m.profile.callsign, online: online(m), connected: online(m), team: m.team, ready: m.ready })),
   };
 }
 
@@ -1557,10 +1642,29 @@ function teamFor(room: ServerRoom): TeamId {
   return cobalt <= amber ? 'cobalt' : 'amber';
 }
 
+function roomByCode(code: unknown): ServerRoom | undefined {
+  if (typeof code !== 'string' || code.length > 24) return;
+  const room = rooms.get(code.trim().toUpperCase());
+  if (room && !room.publicMatch) return room;
+}
+
+function roomJoinError(room: ServerRoom | undefined): string | undefined {
+  if (!room) return 'room_not_found';
+  if (room.phase !== 'waiting' || room.starting || room.countdownEndsAt !== null) return 'match_locked';
+  if (room.members.size >= ROOM_SIZE) return 'room_full';
+}
+
+function moveRoomMember(room: ServerRoom, conn: Connection) {
+  addMember(room, conn);
+  transferHost(room);
+  roomUpdate(room);
+}
+
 function addMember(room: ServerRoom, conn: Connection, team = teamFor(room)): void {
   const id = conn.auth.playerId;
-  room.members.set(id, { id, profile: conn.profile, team, joinedAt: Date.now() });
+  room.members.set(id, { id, profile: conn.profile, team, joinedAt: Date.now(), ready: false });
   roomByPlayer.set(id, room);
+  invalidateCustomRoom(room);
 }
 
 function transferHost(room: ServerRoom): void {
@@ -1577,6 +1681,7 @@ function dropMember(room: ServerRoom, id: string): void {
   if (!member || member.forfeited) return;
   const conn = connections.get(id);
   if (roomByPlayer.get(id) === room) roomByPlayer.delete(id);
+  invalidateCustomRoom(room);
   if (room.phase === 'waiting' && !room.starting) {
     room.members.delete(id);
     if (!room.members.size) rooms.delete(room.config.roomId);
@@ -1622,12 +1727,15 @@ function populateArena(room: ServerRoom): void {
   if (room.fillBots && !room.publicMatch) ensureRoomBots(room);
 }
 
-async function launch(room: ServerRoom): Promise<boolean> {
+async function launch(room: ServerRoom, stillEligible = () => true): Promise<boolean> {
   if (closing || room.phase !== 'waiting' || room.starting) return false;
   room.starting = true;
+  const version = room.version;
   const roster = [...room.members.values()];
   const minimum = minimumPlayers(room);
-  const sameRoster = () => !closing && roster.filter(online).length >= minimum && roster.every(m => !m.forfeited) && roster.length === room.members.size;
+  const sameRoster = () => !closing && room.version === version && stillEligible() &&
+    roster.length >= minimum && roster.every(m => online(m) && room.members.get(m.id) === m) &&
+    roster.length === room.members.size && (room.publicMatch || !customStartError(room));
   const matchId = randomUUID();
   let opened = false;
   let worker: GameWorker | undefined;
@@ -1658,6 +1766,7 @@ async function launch(room: ServerRoom): Promise<boolean> {
       room.matchId = null;
       return false;
     }
+    room.countdownEndsAt = null;
     matches.set(matchId, { room, worker });
     roomUpdate(room);
     for (const member of room.members.values()) joined(room, connections.get(member.id));
@@ -1672,8 +1781,19 @@ async function launch(room: ServerRoom): Promise<boolean> {
     }
     room.starting = false;
     if (room.phase === 'waiting') {
+      const failedCountdown = !room.publicMatch && room.version === version && room.countdownEndsAt !== null;
+      if (failedCountdown) invalidateCustomRoom(room);
       for (const member of room.members.values()) if (member.forfeited) room.members.delete(member.id);
       if (!room.members.size) rooms.delete(room.config.roomId);
+      else {
+        roomUpdate(room);
+        if (failedCountdown) {
+          for (const member of room.members.values()) {
+            const conn = connections.get(member.id);
+            if (conn && online(member)) errorTo(conn, 'room:start', 'unavailable');
+          }
+        }
+      }
     }
   }
 }
@@ -1697,6 +1817,7 @@ function releaseRoom(room: ServerRoom, returnToLobby = false): void {
   room.phase = 'waiting';
   room.matchId = null;
   room.terminating = false;
+  invalidateCustomRoom(room);
   if (!room.members.size) {
     rooms.delete(room.config.roomId);
     return;
@@ -1805,10 +1926,21 @@ function clearReady(ready: ReadyCheck): void {
 
 function cancelReady(ready: ReadyCheck, excluded?: string): void {
   if (pendingReady.get(ready.id) !== ready) return;
+  if (excluded) ready.withdrawn.add(excluded);
   clearReady(ready);
-  for (const entry of ready.entries) {
+  const canRestore = (entry: QueueEntry) => {
     const conn = connections.get(entry.id);
-    if (entry.id !== excluded && ready.accepted.has(entry.id) && conn && isCurrent(conn) && !roomByPlayer.has(entry.id)) queue.set(entry.id, entry);
+    return !ready.withdrawn.has(entry.id) && ready.accepted.has(entry.id) && conn && isCurrent(conn) && !roomByPlayer.has(entry.id);
+  };
+  for (const entry of ready.entries) {
+    if (!canRestore(entry)) continue;
+    if (entry.partyId) {
+      const party = parties.get(entry.partyId);
+      const group = ready.entries.filter(other => other.partyId === entry.partyId);
+      if (!party || group.length !== party.members.size ||
+          group.some(other => !party.members.has(other.id) || !canRestore(other))) continue;
+    }
+    queue.set(entry.id, entry);
   }
   queueUpdate([...ready.entries.map(entry => entry.id), ...queue.keys()]);
 }
@@ -1820,15 +1952,34 @@ async function makeReady(now: number): Promise<void> {
   const entries = order.flatMap(id => {
     const entry = queue.get(id);
     const conn = connections.get(id);
-    return entry && conn && isCurrent(conn) ? [entry] : [];
+    if (!entry || !conn || !isCurrent(conn)) return [];
+    if (entry.partyId) {
+      const party = parties.get(entry.partyId);
+      if (!party?.members.has(id) || [...party.members.keys()].some(memberId => {
+        const memberConn = connections.get(memberId);
+        return queue.get(memberId)?.partyId !== party.id || !memberConn || !isCurrent(memberConn);
+      })) return [];
+    }
+    return [entry];
   });
-  const remaining: string[] = [];
-  for (let i = 0; i + ROOM_SIZE <= entries.length; i += ROOM_SIZE) {
-    const ready: ReadyCheck = { id: randomUUID(), entries: entries.slice(i, i + ROOM_SIZE), accepted: new Set(), deadline: now + READY_MS, starting: false };
+  const selected: string[] = [];
+  let candidates = entries;
+  while (candidates.length >= ROOM_SIZE) {
+    // Keep existing alternating assignments when the whole candidate pool consists of solo players.
+    const plan = candidates.some(entry => entry.partyId)
+      ? selectTeamClash(candidates)
+      : candidates.slice(0, ROOM_SIZE).map((entry, index) => ({ entry, team: (index % 2 ? 'amber' : 'cobalt') as TeamId }));
+    if (!plan) break;
+    const ready: ReadyCheck = {
+      id: randomUUID(), entries: plan.map(({entry}) => entry),
+      teams: new Map(plan.map(({entry, team}) => [entry.id, team])), accepted: new Set(), withdrawn: new Set(),
+      deadline: now + READY_MS, starting: false,
+    };
     pendingReady.set(ready.id, ready);
-    for (const entry of ready.entries) { queue.delete(entry.id); readyByPlayer.set(entry.id, ready); remaining.push(entry.id); }
+    for (const entry of ready.entries) { queue.delete(entry.id); readyByPlayer.set(entry.id, ready); selected.push(entry.id); }
+    candidates = candidates.filter(entry => !ready.teams.has(entry.id));
   }
-  queueUpdate([...remaining, ...queue.keys()]);
+  if (selected.length) queueUpdate([...selected, ...queue.keys()]);
 }
 
 // Serialize successful public launches to rotate arena maps in launch order.
@@ -1838,11 +1989,12 @@ function launchReady(ready: ReadyCheck): void {
   ready.starting = true;
   publicLaunches = publicLaunches.then(async () => {
     if (pendingReady.get(ready.id) !== ready || closing) return;
+    if (ready.withdrawn.size) { cancelReady(ready); return; }
     const seats = ready.entries.map(entry => connections.get(entry.id));
     if (seats.some(conn => !conn || !isCurrent(conn))) { cancelReady(ready); return; }
     const room = createRoom({ name: 'Public Team Clash', mapId: nextPublicMap % 2 === 0 ? 'reactor_foundry' : 'cryo_relay', mode: 'team_clash', isPrivate: false, publicMatch: true });
-    for (const conn of seats) if (conn) addMember(room, conn);
-    const started = await launch(room);
+    for (const conn of seats) if (conn) addMember(room, conn, ready.teams.get(conn.auth.playerId));
+    const started = await launch(room, () => ready.withdrawn.size === 0);
     if (started) {
       nextPublicMap++;
       clearReady(ready);
@@ -1859,15 +2011,86 @@ function launchReady(ready: ReadyCheck): void {
   }).catch(err => { console.error('Unable to open public match:', err); cancelReady(ready); });
 }
 
+function partyView(party: Party): PartyView {
+  return {
+    id: party.id,
+    leaderId: party.leaderId,
+    members: [...party.members].map(([id, member]) => {
+      const conn = connections.get(id);
+      return { id, callsign: member.callsign, connected: !!conn && isCurrent(conn) };
+    }),
+  };
+}
+
+function updateParty(party: Party) {
+  for (const id of party.members.keys()) sessionState(connections.get(id));
+}
+
+function partyLocked(party: Party) {
+  return [...party.members.keys()].some(id => queue.has(id) || readyByPlayer.has(id) || roomByPlayer.has(id));
+}
+
+function leaveQueue(id: string) {
+  const party = partyByPlayer.get(id);
+  const ids = party ? [...party.members.keys()] : [id];
+  const ready = readyByPlayer.get(id);
+  if (ready) {
+    if (ready.starting) ready.withdrawn.add(id);
+    else cancelReady(ready, id);
+    return;
+  }
+  const removed = ids.filter(memberId => queue.delete(memberId));
+  if (removed.length) queueUpdate([...removed, ...queue.keys()]);
+}
+
+function transferPartyLeader(party: Party) {
+  if (party.members.has(party.leaderId) && party.leaderId) return;
+  party.leaderId = [...party.members.keys()].find(id => {
+    const conn = connections.get(id);
+    return conn && isCurrent(conn);
+  }) ?? '';
+}
+
+function dropPartyMember(party: Party, id: string) {
+  leaveQueue(id);
+  party.members.delete(id);
+  partyByPlayer.delete(id);
+  if (party.members.size) {
+    transferPartyLeader(party);
+    updateParty(party);
+  } else parties.delete(party.id);
+  sessionState(connections.get(id));
+}
+
+function expireSocialState(now: number) {
+  for (const party of parties.values()) {
+    for (const [id, member] of party.members) {
+      if (member.detachedAt !== undefined && now - member.detachedAt >= SEAT_MS) dropPartyMember(party, id);
+    }
+  }
+  for (const [id, inbox] of invitesByTarget) {
+    let removed = false;
+    for (const [key, invite] of inbox) {
+      if (invite.expiresAt <= now) { inbox.delete(key); removed = true; }
+    }
+    if (!inbox.size) invitesByTarget.delete(id);
+    if (removed) sessionState(connections.get(id));
+  }
+}
+
 function sessionState(conn: Connection | undefined, state?: ReturnType<typeof queueState>): void {
   if (!conn) return;
   const id = conn.auth.playerId;
   const room = roomByPlayer.get(id);
   const ready = readyByPlayer.get(id);
+  const party = partyByPlayer.get(id);
+  const invites = [...(invitesByTarget.get(id)?.values() ?? [])].filter(invite => invite.expiresAt > Date.now())
+    .map(({id, kind, senderId, senderName, expiresAt}) => ({id, kind, senderId, senderName, expiresAt}));
   send(conn, 'session:state', {
-    playerId: id, room: room ? roomView(room) : null, queue: state ?? queueState(id),
+    playerId: id, serverTime: Date.now(), room: room ? roomView(room) : null, queue: state ?? queueState(id),
     queuedAt: queue.get(id)?.queuedAt ?? null,
     offer: ready ? { offerId: ready.id, expiresAt: ready.deadline, accepted: ready.accepted.has(id), acceptedCount: ready.accepted.size } : null,
+    party: party ? partyView(party) : null, invites,
   });
 }
 
@@ -1880,24 +2103,37 @@ async function handleCommand(conn: Connection, type: string, payload: Record<str
   const err = (code: string) => errorTo(conn, type, code);
   const room = () => roomByPlayer.get(id);
   const busy = () => roomByPlayer.has(id) || queue.has(id) || readyByPlayer.has(id);
+  const privateBusy = () => busy() || partyByPlayer.has(id);
   const allowed = async (minMs = 0) => (await services.allowPlay(id, minMs)) && isCurrent(conn);
   switch (type) {
     case 'queue:join':
     case 'mmq:join': {
       if (queue.has(id) || readyByPlayer.has(id)) { sessionState(conn); return; }
       if (busy()) { err('busy'); return; }
+      const party = partyByPlayer.get(id);
+      if (party && party.leaderId !== id) { err('not_party_leader'); return; }
+      const ids = party ? [...party.members.keys()] : [id];
+      const rosterAvailable = () => isCurrent(conn) && partyByPlayer.get(id) === party &&
+        (!party || (party.leaderId === id && party.members.size === ids.length && ids.every(memberId => party.members.has(memberId)))) &&
+        ids.every(memberId => {
+          const seat = connections.get(memberId);
+          return seat && isCurrent(seat) && !queue.has(memberId) && !readyByPlayer.has(memberId) && !roomByPlayer.has(memberId);
+        });
+      if (!rosterAvailable()) { err('party_offline'); return; }
       if (await services.isDraining()) { err('unavailable'); return; }
-      if (!await allowed(MATCH_MS + READY_MS)) { err('ineligible'); return; }
-      queue.set(id, { id, queuedAt: Date.now(), order: ++queueOrder, profile: conn.profile });
+      const eligible = await Promise.all(ids.map(memberId => services.allowPlay(memberId, MATCH_MS + READY_MS)));
+      if (eligible.some(value => !value)) { err('ineligible'); return; }
+      if (!rosterAvailable()) { err('party_offline'); return; }
+      const queuedAt = Date.now(), order = ++queueOrder;
+      for (const memberId of ids) queue.set(memberId, { id: memberId, queuedAt, order, partyId: party?.id });
       queueUpdate([...queue.keys()]);
-
       return;
     }
     case 'queue:leave':
     case 'mmq:leave': {
-      if (queue.delete(id)) queueUpdate([...queue.keys(), id]);
-      const ready = readyByPlayer.get(id);
-      if (ready && !ready.starting) cancelReady(ready, id);
+      const party = partyByPlayer.get(id);
+      if (party && party.leaderId !== id) { err('not_party_leader'); return; }
+      leaveQueue(id);
       return;
     }
     case 'queue:confirm':
@@ -1918,26 +2154,35 @@ async function handleCommand(conn: Connection, type: string, payload: Record<str
       return;
     }
     case 'room:create': {
-      if (busy()) { err('busy'); return; }
+      if (privateBusy()) { err('busy'); return; }
       if (await services.isDraining()) { err('unavailable'); return; }
       if (!await allowed()) { err('ineligible'); return; }
+      if (privateBusy()) { err('busy'); return; }
       const created = createRoom({ ...roomOptions(payload), isPrivate: true, hostId: id, hostCallsign: conn.profile.callsign });
       addMember(created, conn);
       roomUpdate(created);
       return;
     }
+    case 'room:preview': {
+      const code = payload.roomId;
+      const target = roomByCode(code);
+      const error = roomJoinError(target);
+      send(conn, 'room:preview', {
+        roomId: typeof code === 'string' ? code.slice(0, 24).trim().toUpperCase() : '',
+        ...(target ? { name: target.config.name, mapId: target.config.mapId, mode: target.config.mode, playerCount: target.members.size } : {}),
+        available: !error, error,
+      });
+      return;
+    }
     case 'room:join': {
-      if (busy()) { err('busy'); return; }
+      if (privateBusy()) { err('busy'); return; }
       if (await services.isDraining()) { err('unavailable'); return; }
       if (!await allowed()) { err('ineligible'); return; }
-      const code = payload.roomId ?? payload.code;
-      const target = typeof code === 'string' && code.length <= 24 ? rooms.get(code.trim().toUpperCase()) : undefined;
-      if (!target || target.publicMatch) { err('room_not_found'); return; }
-      if (target.phase !== 'waiting' || target.starting) { err('match_locked'); return; }
-      if (target.members.size >= ROOM_SIZE) { err('room_full'); return; }
-      addMember(target, conn);
-      transferHost(target);
-      roomUpdate(target);
+      if (privateBusy()) { err('busy'); return; }
+      const target = roomByCode(payload.roomId ?? payload.code);
+      const unavailable = roomJoinError(target);
+      if (unavailable || !target) { err(unavailable ?? 'room_not_found'); return; }
+      moveRoomMember(target, conn);
       return;
     }
     case 'room:leave': {
@@ -1947,22 +2192,138 @@ async function handleCommand(conn: Connection, type: string, payload: Record<str
     }
     case 'room:settings':
     case 'room:update':
+    case 'room:team':
+    case 'room:ready':
+    case 'room:cancel':
     case 'room:start': {
       const target = room();
       if (!target || target.publicMatch) { err('room_not_found'); return; }
-      if (target.phase !== 'waiting' || target.starting) { err('match_locked'); return; }
-      if (target.config.hostId !== id) { err('not_host'); return; }
-      if (type !== 'room:start') {
-        if (!await allowed() || room() !== target || target.phase !== 'waiting' || target.starting || target.config.hostId !== id) { err('unavailable'); return; }
-        const { fillBots, ...changes } = roomOptions(payload);
-        Object.assign(target.config, changes, { isPrivate: true });
-        target.fillBots = fillBots ?? target.fillBots;
+      if (target.phase !== 'waiting') { err('match_locked'); return; }
+      const personal = type === 'room:team' || type === 'room:ready';
+      if (!personal && target.config.hostId !== id) { err('not_host'); return; }
+      if (type === 'room:start' && [...target.members.values()].filter(online).length < minimumPlayers(target)) { err('need_two_players'); return; }
+      if (payload.version !== target.version) { err('stale_room'); return; }
+      const member = target.members.get(id);
+      if (!member || !online(member)) return;
+      if (type === 'room:cancel' || (type === 'room:ready' && payload.ready === false)) {
+        if (target.countdownEndsAt !== null || target.starting) invalidateCustomRoom(target);
+        else if (type === 'room:ready') member.ready = false;
         roomUpdate(target);
         return;
       }
-      const onlineSeats = [...target.members.values()].filter(online);
-      if (onlineSeats.length < minimumPlayers(target)) { err('need_two_players'); return; }
-      if (!await launch(target)) err('unavailable');
+      if (target.countdownEndsAt !== null || target.starting) { err('countdown_active'); return; }
+      if (type === 'room:ready') {
+        if (payload.ready !== true) return;
+        member.ready = true;
+      } else if (type === 'room:team') {
+        const team = payload.team;
+        if (target.config.mode === 'ffa' || (team !== 'cobalt' && team !== 'amber') || team === member.team) return;
+        if ([...target.members.values()].filter(seat => !seat.forfeited && seat.team === team).length >= 3) { err('team_full'); return; }
+        member.team = team;
+        invalidateCustomRoom(target);
+      } else if (type === 'room:start') {
+        const reason = customStartError(target);
+        if (reason) { err(reason); return; }
+        invalidateCustomRoom(target, false);
+        target.countdownEndsAt = Date.now() + COUNTDOWN_MS;
+      } else {
+        const { fillBots, ...changes } = roomOptions(payload);
+        if (target.fillBots === (fillBots ?? target.fillBots) &&
+            Object.entries(changes).every(([key, value]) => key === 'isPrivate' || target.config[key as keyof LobbyConfig] === value)) return;
+        Object.assign(target.config, changes, { isPrivate: true });
+        target.fillBots = fillBots ?? target.fillBots;
+        invalidateCustomRoom(target);
+      }
+      roomUpdate(target);
+      return;
+    }
+    case 'party:create': {
+      if (partyByPlayer.has(id)) { sessionState(conn); return; }
+      if (busy()) { err('busy'); return; }
+      const party: Party = { id: randomUUID(), leaderId: id, members: new Map([[id, { callsign: conn.profile.callsign }]]) };
+      parties.set(party.id, party);
+      partyByPlayer.set(id, party);
+      updateParty(party);
+      return;
+    }
+    case 'party:leave': {
+      const party = partyByPlayer.get(id);
+      if (!party) return;
+      if (partyLocked(party)) { err('party_locked'); return; }
+      dropPartyMember(party, id);
+      return;
+    }
+    case 'social:invite': {
+      const { kind, playerId } = payload;
+      if ((kind !== 'room' && kind !== 'party') || typeof playerId !== 'string' || !connections.has(playerId) || id === playerId) {
+        err('invite_unavailable'); return;
+      }
+      const context = kind === 'room' ? room() : partyByPlayer.get(id);
+      if (!context || !await services.limit('invite:' + id, 10, 60) ||
+          !await services.social.canInvite(id, playerId) || !isCurrent(conn)) { err('invite_unavailable'); return; }
+      if (kind === 'room') {
+        const target = room();
+        if (!target || target !== context || target.publicMatch || roomJoinError(target)) { err('invite_unavailable'); return; }
+      } else {
+        const party = partyByPlayer.get(id);
+        if (!party || party !== context || party.leaderId !== id) { err('not_party_leader'); return; }
+        if (party.members.size >= 3) { err('party_full'); return; }
+        if (partyLocked(party) || party.members.has(playerId)) { err('party_locked'); return; }
+      }
+      const receiver = connections.get(playerId);
+      if (!receiver || !isCurrent(receiver)) { err('invite_unavailable'); return; }
+      const contextId = 'config' in context ? context.config.roomId : context.id;
+      const inbox = invitesByTarget.get(playerId) ?? new Map<string, PendingInvite>();
+      const previous = [...inbox.values()].find(invite => invite.kind === kind && invite.contextId === contextId && invite.senderId === id);
+      if (previous) inbox.delete(previous.id);
+      if (inbox.size >= 10) { err('invite_unavailable'); return; }
+      const invite: PendingInvite = {
+        id: randomUUID(), kind, senderId: id, senderName: conn.profile.callsign, expiresAt: Date.now() + INVITE_MS,
+        contextId,
+      };
+      inbox.set(invite.id, invite);
+      invitesByTarget.set(playerId, inbox);
+      sessionState(receiver);
+      send(conn, 'social:sent', {kind, playerId});
+      return;
+    }
+    case 'social:respond': {
+      const inbox = invitesByTarget.get(id);
+      const invite = typeof payload.inviteId === 'string' ? inbox?.get(payload.inviteId) : undefined;
+      if (!invite || invite.expiresAt <= Date.now()) { err('invite_expired'); return; }
+      const consume = (notify = true) => {
+        inbox?.delete(invite.id);
+        if (!inbox?.size && invitesByTarget.get(id) === inbox) invitesByTarget.delete(id);
+        if (notify) sessionState(conn);
+      };
+      if (payload.accept === false) { consume(); return; }
+      if (payload.accept !== true) return;
+      if (privateBusy()) { err('busy'); return; }
+      if (!await allowed() || await services.isDraining()) { err('unavailable'); return; }
+      const permitted = await services.social.canInvite(invite.senderId, id);
+      if (!isCurrent(conn) || invitesByTarget.get(id) !== inbox ||
+          inbox?.get(invite.id) !== invite || invite.expiresAt <= Date.now()) { err('invite_expired'); return; }
+      if (!permitted) { consume(); err('invite_unavailable'); return; }
+      if (privateBusy()) { err('busy'); return; }
+      if (invite.kind === 'room') {
+        const target = roomByCode(invite.contextId);
+        const unavailable = roomJoinError(target);
+        const sender = target?.members.get(invite.senderId);
+        if (!target || unavailable || !sender || !online(sender) || roomByPlayer.get(sender.id) !== target) {
+          consume(); err(unavailable ?? 'invite_unavailable'); return;
+        }
+        consume(false);
+        moveRoomMember(target, conn);
+      } else {
+        const party = parties.get(invite.contextId);
+        if (!party || party.leaderId !== invite.senderId || !connections.has(party.leaderId)) { consume(); err('invite_unavailable'); return; }
+        if (party.members.size >= 3) { consume(); err('party_full'); return; }
+        if (partyLocked(party)) { err('party_locked'); return; }
+        consume(false);
+        party.members.set(id, { callsign: conn.profile.callsign });
+        partyByPlayer.set(id, party);
+        updateParty(party);
+      }
       return;
     }
     case 'chat:send': {
@@ -1990,13 +2351,19 @@ function detach(conn: Connection): void {
   const id = conn.auth.playerId;
   if (connections.get(id) !== conn) return;
   connections.delete(id);
-  if (queue.delete(id)) queueUpdate([...queue.keys(), id]);
-  const ready = readyByPlayer.get(id);
-  if (ready && !ready.starting) cancelReady(ready, id);
+  leaveQueue(id);
+  const now = Date.now();
+  const party = partyByPlayer.get(id);
+  const partyMember = party?.members.get(id);
+  if (party && partyMember) {
+    partyMember.detachedAt = now;
+    updateParty(party);
+  }
   const room = roomByPlayer.get(id);
   const member = room?.members.get(id);
   if (!room || !member || member.forfeited) return;
-  member.detachedAt = Date.now();
+  member.detachedAt = now;
+  invalidateCustomRoom(room);
   relaySeat(room, id, 'disconnected');
   const p = room.players.get(id);
   if (p) { clearInput(p); p.dashing = false; p.dashRemaining = 0; p.vx = 0; p.vz = 0; }
@@ -2023,6 +2390,8 @@ function disqualify(conn: Connection): void {
   const id = conn.auth.playerId;
   const room = roomByPlayer.get(id);
   if (room) { dropMember(room, id); evaluateForfeits(room); }
+  const party = partyByPlayer.get(id);
+  if (party) dropPartyMember(party, id);
   expireSession(conn);
 }
 
@@ -2033,19 +2402,32 @@ function expireSession(conn: Connection): void {
 
 function acceptSocket(ws: WebSocket, req: http.IncomingMessage, auth: Auth, profile: PlayerProfile, playUntil: number): void {
   const id = auth.playerId;
+  const now = Date.now();
   const previous = connections.get(id);
-  const conn: Connection = { ws, auth, req, profile, playUntil, windowAt: Date.now(), packets: 0, commands: 0, pendingCommands: 0, commandChain: Promise.resolve(), eligibilityCheck: false, alive: true };
+  const party = partyByPlayer.get(id);
+  const partyMember = party?.members.get(id);
+  if (party && partyMember?.detachedAt !== undefined && now - partyMember.detachedAt >= SEAT_MS) dropPartyMember(party, id);
+  const conn: Connection = { ws, auth, req, profile, playUntil, windowAt: now, packets: 0, commands: 0, pendingCommands: 0, commandChain: Promise.resolve(), eligibilityCheck: false, alive: true };
   connections.set(id, conn);
   previous?.ws.close(4409, 'Session superseded');
+  if (party && partyMember && partyByPlayer.get(id) === party) {
+    partyMember.detachedAt = undefined;
+    partyMember.callsign = profile.callsign;
+    transferPartyLeader(party);
+    updateParty(party);
+  }
   const room = roomByPlayer.get(id);
   if (room) {
-    removeExpiredSeats(room, Date.now());
+    removeExpiredSeats(room, now);
     evaluateForfeits(room);
     const member = room.members.get(id);
     if (member && !member.forfeited) {
       member.detachedAt = undefined;
       relaySeat(room, id, 'joined');
-      if (room.phase === 'waiting') member.profile = profile;
+      if (room.phase === 'waiting') {
+        member.profile = profile;
+        transferHost(room);
+      }
       const p = room.players.get(id);
       if (p) {
         clearInput(p);
@@ -2099,6 +2481,12 @@ function acceptSocket(ws: WebSocket, req: http.IncomingMessage, auth: Auth, prof
 function updateLiveProfile(id: string, profile: PlayerProfile): void {
   const conn = connections.get(id);
   if (conn) conn.profile = profile;
+  const party = partyByPlayer.get(id);
+  const partyMember = party?.members.get(id);
+  if (party && partyMember && partyMember.callsign !== profile.callsign) {
+    partyMember.callsign = profile.callsign;
+    updateParty(party);
+  }
   const room = roomByPlayer.get(id);
   const member = room?.members.get(id);
   if (!room || !member || room.phase === 'ended' || room.starting) return;
@@ -2197,6 +2585,27 @@ function requestFinish(room: ServerRoom, adjudication: Adjudication): void {
   gamePool.send(match.worker, { type: 'finish', matchId: room.matchId, adjudication });
 }
 
+async function deliverTacticalPing(room: ServerRoom, ping: TacticalPing): Promise<void> {
+  const sender = room.members.get(ping.playerId);
+  const senderConn = connections.get(ping.playerId);
+  const current = () => room.phase === 'active' && !room.terminating && room.matchId === ping.matchId &&
+    roomByPlayer.get(ping.playerId) === room && !!sender && online(sender) &&
+    !!senderConn && isCurrent(senderConn) && ping.expiresAt > Date.now();
+  if (room.config.mode === 'ffa' || sender?.team !== ping.team || !current()) return;
+  const teammates = [...room.members.values()].filter(member => member.team === ping.team && online(member));
+  const [allowed, blocked] = await Promise.all([
+    services.social.canSignal(ping.playerId),
+    services.chat.blockedBy(teammates.map(member => member.id), ping.playerId),
+  ]);
+  if (!allowed || !current()) return;
+  const payload = { ...ping, serverTime: Date.now() };
+  for (const member of teammates) {
+    if (online(member) && !blocked.has(member.id) && roomByPlayer.get(member.id) === room) {
+      send(connections.get(member.id), 'match:ping', payload);
+    }
+  }
+}
+
 function handleGameEvent(worker: GameWorker, event: GameEvent): void {
   if (event.type === 'ready' || event.type === 'metrics') return;
   const match = matches.get(event.matchId);
@@ -2209,6 +2618,8 @@ function handleGameEvent(worker: GameWorker, event: GameEvent): void {
     const conn = connections.get(event.playerId);
     const seat = room.members.get(event.playerId);
     if (conn && seat && online(seat) && isCurrent(conn) && conn.ws.bufferedAmount <= MAX_SEND_BUFFER) conn.ws.send(event.wire);
+  } else if (event.type === 'ping') {
+    void deliverTacticalPing(room, event.ping).catch(err => console.error('Unable to deliver tactical marker:', err));
   } else if (event.type === 'finish') {
     room.players = event.room.players;
     room.scoreCobalt = event.room.scoreCobalt;
@@ -2269,8 +2680,16 @@ async function startServer(): Promise<void> {
       // A disconnected account may still hold a resumable seat.
       const room = roomByPlayer.get(id);
       if (room) { dropMember(room, id); evaluateForfeits(room); }
+      const party = partyByPlayer.get(id);
+      if (party) dropPartyMember(party, id);
     }
     if (conn) expireSession(conn);
+  });
+  services.social.setPresenceProvider(id => {
+    const conn = connections.get(id);
+    if (!conn || !isCurrent(conn)) return 'offline';
+    const room = roomByPlayer.get(id);
+    return room?.phase === 'active' ? 'in_match' : room ? 'in_room' : 'online';
   });
   await services.lobby.claim(OWNER_ID);
   const expectedWorkers = Math.round(clampNum(process.env.GAME_WORKERS ?? Math.min(4, availableParallelism()), 1, 32, 2));
@@ -2397,7 +2816,9 @@ async function startServer(): Promise<void> {
     for (const room of rooms.values()) {
       removeExpiredSeats(room, now);
       evaluateForfeits(room);
-
+      if (room.phase === 'waiting' && !room.starting && room.countdownEndsAt !== null && room.countdownEndsAt <= now) {
+        void launch(room);
+      }
     }
     ticks.push(performance.now() - start);
     if (ticks.length > 1200) ticks.shift();
@@ -2430,6 +2851,7 @@ async function startServer(): Promise<void> {
   let validationIndex = 0;
   const eligibility = setInterval(() => {
     if (closing) return;
+    expireSocialState(Date.now());
     const sockets = [...connections.values()];
     const count = Math.ceil(sockets.length / 15);
     for (let i = 0; i < count; i++) void recheck(sockets[(validationIndex + i) % sockets.length]);

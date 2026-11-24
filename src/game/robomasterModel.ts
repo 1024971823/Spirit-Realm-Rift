@@ -26,6 +26,7 @@ export interface RoboMasterCombatantRig {
   shieldDome: THREE.Mesh;
   overclockRing: THREE.Mesh;
   robotClass: RobotClass;
+  disposeModelLoad: () => void;
   getMuzzleWorldPos: (out: THREE.Vector3) => THREE.Vector3;
   getMiningEmitterWorldPos: (out: THREE.Vector3) => THREE.Vector3;
   animate: (
@@ -38,7 +39,36 @@ export interface RoboMasterCombatantRig {
   ) => void;
 }
 
+type RoboMasterAssetStatus = { state: 'idle' | 'loading' | 'ready' | 'error'; loaded: number; total: number };
+
 const templatePromises = new Map<RobotClass, Promise<CachedTemplate>>();
+const loadListeners = new Set<() => void>();
+let loadStatus: Record<RobotClass, RoboMasterAssetStatus> = {
+  s1_striker: { state: 'idle', loaded: 0, total: 0 },
+  ep_miner: { state: 'idle', loaded: 0, total: 0 },
+};
+
+export function subscribeRoboMasterLoads(listener: () => void): () => void {
+  loadListeners.add(listener);
+  return () => { loadListeners.delete(listener); };
+}
+
+export function getRoboMasterLoadStatus(): Record<RobotClass, RoboMasterAssetStatus> {
+  return loadStatus;
+}
+
+function publishLoadStatus(robotClass: RobotClass, status: RoboMasterAssetStatus): void {
+  loadStatus = { ...loadStatus, [robotClass]: status };
+  loadListeners.forEach((listener) => listener());
+}
+
+export function retryRoboMasterLoads(): void {
+  for (const robotClass of ['s1_striker', 'ep_miner'] as const) {
+    if (loadStatus[robotClass].state !== 'error') continue;
+    templatePromises.delete(robotClass);
+    getRoboMasterTemplate(robotClass).catch(() => {});
+  }
+}
 
 function stripEmbeddedLightsAndCameras(root: THREE.Object3D): void {
   const toRemove: THREE.Object3D[] = [];
@@ -60,19 +90,30 @@ export function getRoboMasterTemplate(robotClass: RobotClass = 's1_striker'): Pr
 
   const promise = new Promise<CachedTemplate>((resolve, reject) => {
     let loadedRobot: URDFRobot | null = null;
-    let urdfParsed = false;
-    let managerLoaded = false;
-    let urdfFailed = false;
-    let resolved = false;
-
+    let failure: unknown;
     const manager = new THREE.LoadingManager();
+    // Three deduplicates concurrent FileLoader URLs across managers. Track each
+    // requested mesh here so shared files still count toward both templates.
+    const meshFileManager = new THREE.LoadingManager();
     const loader = new URDFLoader(manager);
     loader.packages = {
       robomaster_description: '/models/robomaster',
     };
     loader.loadMeshCb = (meshPath, meshManager, material, onComplete) => {
+      meshManager.itemStart(meshPath);
+      let completed = false;
+      const complete = (mesh: THREE.Object3D | null, error?: Error) => {
+        if (completed) return;
+        completed = true;
+        if (error) failure ??= error;
+        try {
+          onComplete(mesh as THREE.Object3D, error);
+        } finally {
+          meshManager.itemEnd(meshPath);
+        }
+      };
       if (/\.dae$/i.test(meshPath)) {
-        const fileLoader = new THREE.FileLoader(meshManager);
+        const fileLoader = new THREE.FileLoader(meshFileManager);
         fileLoader.load(
           meshPath,
           (raw) => {
@@ -91,45 +132,44 @@ export function getRoboMasterTemplate(robotClass: RobotClass = 's1_striker'): Pr
                 THREE.LoaderUtils.extractUrlBase(meshPath),
               );
               if (!dae?.scene) {
-                onComplete(null as unknown as THREE.Object3D, new Error(`Failed to parse Collada mesh: ${meshPath}`));
-                return;
+                throw new Error(`Failed to parse Collada mesh: ${meshPath}`);
               }
               if (isZUp) {
                 dae.scene.rotation.set(-Math.PI / 2, 0, 0);
               }
-              onComplete(dae.scene);
+              complete(dae.scene);
             } catch (err) {
-              onComplete(null as unknown as THREE.Object3D, err as Error);
+              complete(null, err as Error);
             }
           },
           undefined,
-          (err) => onComplete(null as unknown as THREE.Object3D, err as Error),
+          (err) => complete(null, err as Error),
         );
       } else if (/\.stl$/i.test(meshPath)) {
-        const stlLoader = new STLLoader(meshManager);
-        stlLoader.load(
+        const stlLoader = new STLLoader(meshFileManager);
+        const fileLoader = new THREE.FileLoader(meshFileManager).setResponseType('arraybuffer');
+        fileLoader.load(
           meshPath,
-          (geom) => {
-            const mesh = new THREE.Mesh(
-              geom,
-              material || new THREE.MeshPhongMaterial(),
-            );
-            onComplete(mesh);
+          (raw) => {
+            try {
+              complete(new THREE.Mesh(stlLoader.parse(raw as ArrayBuffer), material || new THREE.MeshPhongMaterial()));
+            } catch (err) {
+              complete(null, err as Error);
+            }
           },
           undefined,
-          (err) => onComplete(null as unknown as THREE.Object3D, err as Error),
+          (err) => complete(null, err as Error),
         );
       } else {
-        onComplete(null as unknown as THREE.Object3D);
+        complete(null, new Error(`Unsupported URDF mesh: ${meshPath}`));
       }
     };
 
-    const finalizeIfReady = () => {
-      if (resolved || urdfFailed || !loadedRobot || !urdfParsed || !managerLoaded) return;
-      resolved = true;
-      stripEmbeddedLightsAndCameras(loadedRobot);
+    const finalize = (robot: URDFRobot): CachedTemplate => {
+      stripEmbeddedLightsAndCameras(robot);
 
-      loadedRobot.traverse((obj) => {
+      let hasMesh = false;
+      robot.traverse((obj) => {
         const mesh = obj as THREE.Mesh;
         if (mesh.isMesh) {
           const n = (obj.name || obj.parent?.name || '').toLowerCase();
@@ -143,10 +183,13 @@ export function getRoboMasterTemplate(robotClass: RobotClass = 's1_striker'): Pr
           mesh.castShadow = isPrimarySilhouette;
           mesh.receiveShadow = false;
           if (mesh.geometry) {
+            hasMesh ||= (mesh.geometry.getAttribute('position')?.count ?? 0) > 0;
             mesh.geometry.userData.sharedUrdfGeometry = true;
           }
         }
       });
+
+      if (!hasMesh) throw new Error(`No visual meshes in ${urdfUrl}`);
 
       // Measure exact grounded offset in Three.js space (-Z forward, +Y up)
       const measureOuter = new THREE.Group();
@@ -154,43 +197,44 @@ export function getRoboMasterTemplate(robotClass: RobotClass = 's1_striker'): Pr
       measureInner.rotation.x = -Math.PI / 2;
       measureOuter.rotation.y = Math.PI / 2;
       measureOuter.scale.setScalar(ROBOMASTER_SCALE);
-      measureInner.add(loadedRobot);
+      measureInner.add(robot);
       measureOuter.add(measureInner);
       measureOuter.updateMatrixWorld(true);
 
       const box = new THREE.Box3().setFromObject(measureOuter);
       const groundOffsetY = Number.isFinite(box.min.y) ? -box.min.y : 0.08;
 
-      measureInner.remove(loadedRobot);
-      resolve({ robot: loadedRobot, groundOffsetY });
+      measureInner.remove(robot);
+      return { robot, groundOffsetY };
+    };
+
+    manager.onProgress = (_url, loaded, total) => {
+      publishLoadStatus(robotClass, { state: 'loading', loaded, total });
     };
 
     manager.onLoad = () => {
-      managerLoaded = true;
-      finalizeIfReady();
+      try {
+        if (failure) throw failure;
+        if (!loadedRobot) throw new Error(`No robot in ${urdfUrl}`);
+        resolve(finalize(loadedRobot));
+      } catch (error) {
+        reject(error);
+      }
     };
 
-    manager.onError = (url) => {
-      console.warn(`[RoboMaster ${robotClass} URDF] Asset load warning:`, url);
-    };
-
-    loader.load(
-      urdfUrl,
-      (robot) => {
-        loadedRobot = robot;
-        urdfParsed = true;
-        finalizeIfReady();
-      },
-      undefined,
-      (err) => {
-        urdfFailed = true;
-        templatePromises.delete(robotClass);
-        reject(err);
-      },
-    );
+    manager.onError = (url) => { failure ??= new Error(`Unable to load ${url}`); };
+    loader.load(urdfUrl, (robot) => { loadedRobot = robot; }, undefined, (err) => { failure ??= err; });
   });
 
   templatePromises.set(robotClass, promise);
+  publishLoadStatus(robotClass, { state: 'loading', loaded: 0, total: 1 });
+  void promise.then(
+    () => publishLoadStatus(robotClass, { ...loadStatus[robotClass], state: 'ready' }),
+    (error) => {
+      console.error(`[RoboMaster ${robotClass} URDF] Failed to load model:`, error);
+      publishLoadStatus(robotClass, { ...loadStatus[robotClass], state: 'error' });
+    },
+  );
   return promise;
 }
 
@@ -410,57 +454,68 @@ export function buildRoboMasterCombatantRig(
   let smoothedTurretYaw = 0;
   let smoothedArmLift = 0.2;
 
-  getRoboMasterTemplate(robotClass)
-    .then(({ robot: template, groundOffsetY }) => {
-      if (root.userData.disposed) return;
+  const mountModel = ({ robot: template, groundOffsetY }: CachedTemplate) => {
+    if (root.userData.disposed) return;
 
-      const clone = template.clone() as URDFRobot;
-      tintClonedRobot(clone, robotClass, teamColor, skinHex, beamHex);
+    const clone = template.clone() as URDFRobot;
+    tintClonedRobot(clone, robotClass, teamColor, skinHex, beamHex);
 
-      // ROS URDF (+X fwd, +Y left, +Z up) -> Three.js (-Z fwd, -X left, +Y up)
-      const orientOuter = new THREE.Group();
-      const orientInner = new THREE.Group();
-      orientInner.rotation.x = -Math.PI / 2;
-      orientOuter.rotation.y = Math.PI / 2;
-      orientOuter.scale.setScalar(ROBOMASTER_SCALE);
-      orientOuter.position.y = groundOffsetY;
+    // ROS URDF (+X fwd, +Y left, +Z up) -> Three.js (-Z fwd, -X left, +Y up)
+    const orientOuter = new THREE.Group();
+    const orientInner = new THREE.Group();
+    orientInner.rotation.x = -Math.PI / 2;
+    orientOuter.rotation.y = Math.PI / 2;
+    orientOuter.scale.setScalar(ROBOMASTER_SCALE);
+    orientOuter.position.y = groundOffsetY;
 
-      orientInner.add(clone);
-      orientOuter.add(orientInner);
-      bodyGroup.add(orientOuter);
-      mountedRobot = clone;
+    orientInner.add(clone);
+    orientOuter.add(orientInner);
+    bodyGroup.add(orientOuter);
+    mountedRobot = clone;
 
-      // Attach combat muzzle anchor to blaster_link (S1) or upper camera_link emitter (EP),
-      // and attach mining tether emitter to gripper_t_link (EP) so extended claw never clips walls when shooting.
-      const muzzleTarget =
-        robotClass === 'ep_miner'
-          ? (clone.getObjectByName('camera_link') || clone.getObjectByName('arm_2_link') || clone)
-          : (clone.getObjectByName('blaster_link') || clone);
-      const muzzle = new THREE.Object3D();
-      if (robotClass === 's1_striker') {
-        muzzle.position.set(0.14, 0, 0.01);
-      } else {
-        muzzle.position.set(0.02, 0, 0.02);
-      }
-      muzzleTarget.add(muzzle);
-      muzzleNode = muzzle;
+    // Attach combat muzzle anchor to blaster_link (S1) or upper camera_link emitter (EP),
+    // and attach mining tether emitter to gripper_t_link (EP) so extended claw never clips walls when shooting.
+    const muzzleTarget =
+      robotClass === 'ep_miner'
+        ? (clone.getObjectByName('camera_link') || clone.getObjectByName('arm_2_link') || clone)
+        : (clone.getObjectByName('blaster_link') || clone);
+    const muzzle = new THREE.Object3D();
+    if (robotClass === 's1_striker') {
+      muzzle.position.set(0.14, 0, 0.01);
+    } else {
+      muzzle.position.set(0.02, 0, 0.02);
+    }
+    muzzleTarget.add(muzzle);
+    muzzleNode = muzzle;
 
-      if (robotClass === 'ep_miner') {
-        const gripperTarget =
-          clone.getObjectByName('gripper_t_link') || clone.getObjectByName('camera_link') || clone;
-        const gripperEmitter = new THREE.Object3D();
-        gripperEmitter.position.set(0.03, 0, 0);
-        gripperTarget.add(gripperEmitter);
-        miningEmitterNode = gripperEmitter;
-      } else {
-        miningEmitterNode = muzzle;
-      }
+    if (robotClass === 'ep_miner') {
+      const gripperTarget =
+        clone.getObjectByName('gripper_t_link') || clone.getObjectByName('camera_link') || clone;
+      const gripperEmitter = new THREE.Object3D();
+      gripperEmitter.position.set(0.03, 0, 0);
+      gripperTarget.add(gripperEmitter);
+      miningEmitterNode = gripperEmitter;
+    } else {
+      miningEmitterNode = muzzle;
+    }
 
-      onModelMounted?.();
-    })
-    .catch((err) => {
-      console.error(`[RoboMaster ${robotClass} URDF] Failed to load model:`, err);
-    });
+    onModelMounted?.();
+  };
+
+  let observed = getRoboMasterTemplate(robotClass);
+  const watch = (promise: Promise<CachedTemplate>) => {
+    void promise.then((template) => {
+      stopWatching();
+      mountModel(template);
+    }, () => { /* Keep listening for a player-initiated retry. */ });
+  };
+  const stopWatching = subscribeRoboMasterLoads(() => {
+    const current = templatePromises.get(robotClass);
+    if (!current || current === observed) return;
+    observed = current;
+    watch(current);
+  });
+  watch(observed);
 
   const getMuzzleWorldPos = (out: THREE.Vector3): THREE.Vector3 => {
     if (muzzleNode) {
@@ -534,6 +589,7 @@ export function buildRoboMasterCombatantRig(
     shieldDome,
     overclockRing,
     robotClass,
+    disposeModelLoad: stopWatching,
     getMuzzleWorldPos,
     getMiningEmitterWorldPos,
     animate,

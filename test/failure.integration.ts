@@ -5,7 +5,7 @@ import { createServer } from 'node:net';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { Pool } from 'pg';
-import { api, connect, newAccount, sleep } from './protocol.ts';
+import { api, connect, newAccount, readyPrivateRoom, sleep, startPrivateRoom } from './protocol.ts';
 
 async function retry<T>(check: () => Promise<T | undefined>, message: string, timeout = 8000): Promise<T> {
   const until = performance.now() + timeout;
@@ -25,7 +25,7 @@ async function freePort() {
   return port;
 }
 
-test('Real deadlines and failed settlement: 15s ready, 60s seat expiry, atomic retry without duplicate XP', { timeout: 100_000 }, async t => {
+test('Real deadlines and failed settlement: 15s ready, 60s seat and invite expiry, atomic retry without duplicate XP', { timeout: 100_000 }, async t => {
   assert.ok(process.env.DATABASE_URL && process.env.REDIS_URL, 'Provide isolated PostgreSQL and Redis endpoints');
   const token = randomUUID();
   const suffix = token.replaceAll('-', '');
@@ -36,7 +36,7 @@ test('Real deadlines and failed settlement: 15s ready, 60s seat expiry, atomic r
     env: {
       ...process.env, HOST: '127.0.0.1', PORT: new URL(origin).port, ORIGIN: origin, NODE_ENV: 'production', LOCAL_HTTP: '1', PUBLIC_ACCESS: '0',
       TEST_MAILBOX: '1', PLAYTEST_KEY: key, REDIS_NAMESPACE: 'boundary-integration:' + token, GAME_WORKERS: '2',
-      GAME_WORKER_KEY: undefined, PRISM_SIM_WORKER: undefined, DRAIN_MATCHES: '0',
+      GAME_WORKER_KEY: undefined, PRISM_SIM_WORKER: undefined, DRAIN_MATCHES: '0', ALLOW_SOLO_PLAYTEST: '0',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -99,9 +99,15 @@ test('Real deadlines and failed settlement: 15s ready, 60s seat expiry, atomic r
     players[0].send('room:create', { mode: 'team_clash', fillBots: false });
     const { room } = await players[0].find('session:state', s => s.room?.phase === 'waiting');
     players[1].send('room:join', { roomId: room.roomId });
-    await players[0].find('session:state', s => s.room?.members.length === 2);
-    players[0].send('room:start');
-    const seatedMatch = (await players[0].find('room:joined')).snapshot;
+    const { room: seatedRoom } = await players[0].find('session:state', s => s.room?.members.length === 2);
+    const { data: friend } = await api(origin, 'social', { cookie: accounts[7].cookie });
+    assert.equal((await api(origin, 'social/request', { cookie: accounts[0].cookie, data: { friendCode: friend.friendCode } })).status, 200);
+    assert.equal((await api(origin, 'social/respond', { cookie: accounts[7].cookie, data: { playerId: accounts[0].playerId, accept: true } })).status, 200);
+    players[0].send('social:invite', { kind: 'room', playerId: accounts[7].playerId });
+    const { invites: [invitation] } = await players[7].find('session:state', s => s.invites?.some((i: any) => i.kind === 'room'));
+    assert.ok(invitation.expiresAt - Date.now() > 59_000, 'The invitation must have the full sixty-second window');
+    const readyRoom = await readyPrivateRoom(players.slice(0, 2), seatedRoom);
+    const seatedMatch = await startPrivateRoom(players[0], readyRoom);
     const detachedAt = performance.now();
     players[0].ws.close();
     await players[1].find('session:state', s => s.room?.phase === 'active' && s.room.members.some((m: any) => m.id === accounts[0].playerId && !m.online));
@@ -191,6 +197,9 @@ test('Real deadlines and failed settlement: 15s ready, 60s seat expiry, atomic r
     const expired = await players[1].find('session:state', s => s.room?.matchId === seatedMatch.matchId && s.room.hostId === accounts[1].playerId, 10000);
     assert.ok(performance.now() - detachedAt >= 59900, 'Disconnected host seat expired early');
     assert.equal(expired.room.members.length, 1);
+    await players[7].find('session:state', s => s.serverTime >= invitation.expiresAt && !s.invites?.length);
+    players[7].send('social:respond', { inviteId: invitation.id, accept: true });
+    await players[7].find('session:error', e => e.action === 'social:respond' && e.code === 'invite_expired');
     const returning = await open(0);
     players[0] = returning.client;
     assert.equal(returning.state.room, null, 'An expired account must not resume the active match');

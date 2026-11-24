@@ -5,7 +5,7 @@ import { once } from 'node:events';
 import { createServer } from 'node:net';
 import { test } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
-import { chromium, firefox, type Page } from 'playwright';
+import { chromium, firefox, type Browser, type Page } from 'playwright';
 import type { MatchSnapshot } from '../src/shared/types.ts';
 import { MAPS } from '../src/shared/catalog.ts';
 import { getArenaActiveColliders } from '../src/shared/physics.ts';
@@ -165,7 +165,7 @@ async function assertActualHit(players: ProtocolPlayer[], snap: MatchSnapshot) {
 }
 
 // Run against dedicated test PostgreSQL and Redis instances. Install both Playwright browsers first.
-test('Chromium and Firefox: verified accounts, invite room, resume, and two six-player public matches', { timeout: 220_000 }, async t => {
+test('Chromium and Firefox: invite link, room readiness, friends, party and two six-player public matches', { timeout: 220_000 }, async t => {
   assert.ok(process.env.DATABASE_URL && process.env.REDIS_URL, 'Provide isolated PostgreSQL and Redis endpoints');
   const id = randomUUID();
   const credentials = (n: number): Credentials => ({ email: 'browser-' + id + '-' + n + '@example.com', password: 'browser-testing-' + n + '-only', callsign: 'Browser-' + n });
@@ -210,7 +210,7 @@ test('Chromium and Firefox: verified accounts, invite room, resume, and two six-
     firefoxUserPrefs: { 'webgl.force-enabled': true },
   });
   t.after(() => firefoxBrowser.close());
-  const browserPlayers = await Promise.all([chromiumBrowser, firefoxBrowser].map(async (browser, i) => {
+  async function registerBrowser(browser: Browser, i: number, inviteCode?: string) {
     const context = await browser.newContext({ viewport: { width: 960, height: 720 } });
     const page = await context.newPage();
     const browserName = browser.browserType().name();
@@ -222,7 +222,12 @@ test('Chromium and Firefox: verified accounts, invite room, resume, and two six-
     await observeThreeScenes(page);
     const observer = observePage(page);
     const account = credentials(i + 1);
-    await page.goto(origin + '/?lang=en');
+    await page.goto(origin + '/?lang=en' + (inviteCode ? '&invite=' + encodeURIComponent(inviteCode) : ''));
+    if (inviteCode) {
+      const preview = page.getByRole('region', { name: 'Room invitation' });
+      assert.match(await preview.textContent() ?? '', new RegExp(inviteCode));
+      await preview.getByText('Sign in to see the room and decide whether to join.').waitFor();
+    }
     await button(page, 'Register').click();
     await page.getByLabel('Email', { exact: true }).fill(account.email);
     await page.getByLabel('Password', { exact: true }).fill(account.password);
@@ -252,10 +257,10 @@ test('Chromium and Firefox: verified accounts, invite room, resume, and two six-
     }
     const session = await until(() => observer.events.get('session:state') as (SessionView & { playerId: string }) | undefined, 'authenticated lobby');
     assert.equal(session.room, null, 'login must not automatically enter a room');
-    await button(page, 'Multiplayer lobby').click();
+    if (!inviteCode) await button(page, 'Multiplayer lobby').click();
     return { page, observer, account, playerId: session.playerId };
-  }));
-  const [host, guest] = browserPlayers;
+  }
+  const host = await registerBrowser(chromiumBrowser, 0);
   const profileFor = async (page: Page) => {
     const response = await page.request.get(origin + '/api/profile');
     assert.ok(response.ok());
@@ -268,10 +273,50 @@ test('Chromium and Firefox: verified accounts, invite room, resume, and two six-
   await button(host.page, 'Create room').click();
   await host.page.getByRole('heading', { name: 'Cross browser scrimmage' }).waitFor();
   assert.equal(await button(host.page, 'Start match').isEnabled(), false);
-  const code = (await lobby(host.page).locator('code').textContent())!;
-  await guest.page.locator('input[name="code"]').fill(code);
-  await button(guest.page, 'Join room').click();
+  const code = (await host.page.getByTestId('room-invite-code').textContent())!;
+  const guest = await registerBrowser(firefoxBrowser, 1, code);
+  const browserPlayers = [host, guest];
+  const invitation = guest.page.getByRole('region', { name: 'Room invitation' });
+  await invitation.getByText('Cross browser scrimmage', { exact: true }).waitFor();
+  assert.equal(guest.observer.joins, 0);
+  assert.equal((guest.observer.events.get('session:state') as SessionView).room, null, 'the invite link must not automatically join');
+  await Promise.all(browserPlayers.map(({ page }) => button(page, 'Friends').click()));
+  const guestFriendCode = (await guest.page.getByTestId('friend-code').textContent())!;
+  await host.page.locator('input[name="friendCode"]').fill(guestFriendCode);
+  await button(host.page, 'Send friend request').click();
+  await host.page.getByText('Friend request sent.', { exact: true }).waitFor();
+  await button(guest.page, 'Accept request').click();
+  await host.page.getByRole('region', { name: 'Friends list' }).getByText(guest.account.callsign).waitFor();
+  await button(host.page, 'Invite to room').click();
+  await guest.page.getByRole('region', { name: 'Game invitations' }).getByText(host.account.callsign + ' invited you to a room').waitFor();
+  await button(guest.page, 'Decline invitation').click();
+  await guest.page.getByRole('region', { name: 'Game invitations' }).waitFor({ state: 'hidden' });
+  await invitation.getByRole('button', { name: 'Join room', exact: true }).click();
   await guest.page.getByRole('heading', { name: 'Cross browser scrimmage' }).waitFor();
+  await invitation.waitFor({ state: 'hidden' });
+  await Promise.all(browserPlayers.map(({ page }) => button(page, 'Friends').click()));
+  const guestCobalt = guest.page.getByRole('region', { name: 'Cobalt' });
+  const readyBoth = () => Promise.all(browserPlayers.map(({ page }) => button(page, 'Ready up').click()));
+  await button(host.page, 'Ready up').click();
+  await button(host.page, 'Unready').waitFor();
+  await button(guest.page, 'Join Cobalt').click();
+  await guestCobalt.getByText(guest.account.callsign, { exact: true }).waitFor();
+  await button(host.page, 'Ready up').waitFor();
+  await button(guest.page, 'Join Amber').click();
+  await guest.page.getByRole('region', { name: 'Amber' }).getByText(guest.account.callsign, { exact: true }).waitFor();
+  await until(() => (host.observer.events.get('session:state') as SessionView).room?.members.find(member => member.id === guest.playerId)?.team === 'amber', 'host sees restored team');
+  await readyBoth();
+  await host.page.locator('summary').filter({ hasText: 'Edit room settings' }).click();
+  await host.page.getByLabel('Friendly Fire', { exact: true }).check();
+  await button(host.page, 'Save settings').click();
+  await Promise.all(browserPlayers.map(({ page }) => button(page, 'Ready up').waitFor()));
+  assert.equal(await button(host.page, 'Start match').isEnabled(), false, 'settings change invalidates readiness');
+  await readyBoth();
+  await button(host.page, 'Start match').click();
+  await guest.page.getByRole('timer').waitFor();
+  await button(guest.page, 'Unready').click();
+  await host.page.getByRole('timer').waitFor({ state: 'hidden' });
+  await button(host.page, 'Ready up').waitFor();
   const chat = 'Browser chat ' + id.slice(0, 8);
   await host.page.getByPlaceholder('Message players in this room').fill(chat);
   await button(host.page, 'Send').click();
@@ -298,7 +343,9 @@ test('Chromium and Firefox: verified accounts, invite room, resume, and two six-
   await reportRow.waitFor({ state: 'hidden' });
   await button(host.page, 'Close').click();
   await button(host.page, 'Multiplayer lobby').click();
+  await readyBoth();
   await button(host.page, 'Start match').click();
+  await host.page.getByRole('timer').waitFor();
   const custom = await until(() => host.observer.events.get('room:joined') as RoomJoin | undefined, 'custom match start');
   assert.equal(custom.snapshot.mode, 'control_core');
   assert.equal(custom.snapshot.mapId, 'cryo_relay');
@@ -320,23 +367,46 @@ test('Chromium and Firefox: verified accounts, invite room, resume, and two six-
   await button(guest.page, 'Leave room').click();
 
   const protocolPlayers: ProtocolPlayer[] = [];
+  const protocolCookies: string[] = [];
   for (let n = 3; n <= 6; n++) {
     const account = await newAccount(origin, playtestKey, 'Protocol-' + n);
     const player = connect(origin, account.cookie);
     t.after(() => player.ws.terminate());
     await player.find('session:state');
     protocolPlayers.push(Object.assign(player, { playerId: account.playerId }));
+    protocolCookies.push(account.cookie);
   }
 
+  const partyMate = protocolPlayers[0];
+  const mateCode = (await api(origin, 'social', { cookie: protocolCookies[0] })).data.friendCode;
+  assert.equal(typeof mateCode, 'string');
+  await button(host.page, 'Create party').click();
+  await button(host.page, 'Friends').click();
+  await host.page.locator('input[name="friendCode"]').fill(mateCode);
+  await button(host.page, 'Send friend request').click();
+  await host.page.getByText('Friend request sent.', { exact: true }).waitFor();
+  assert.equal((await api(origin, 'social/respond', { cookie: protocolCookies[0], data: { playerId: host.playerId, accept: true } })).status, 200);
+  await button(host.page, 'Invite to party').click();
+  const partyInvite = await partyMate.find('session:state', state => state.invites?.some((invite: { kind: string }) => invite.kind === 'party'));
+  partyMate.send('social:respond', { inviteId: partyInvite.invites[0].id, accept: true });
+  await host.page.getByRole('region', { name: 'Casual party' }).getByText('Protocol-3', { exact: true }).waitFor();
+  await button(host.page, 'Friends').click();
+
+  let previousPublicOffer: string | undefined;
   for (const mapId of ['reactor_foundry', 'cryo_relay']) {
     const earlierMatch = (host.observer.events.get('room:joined') as RoomJoin).snapshot.matchId;
     await Promise.all(browserPlayers.map(({ page }) => button(page, 'Find a match').click()));
-    for (const player of protocolPlayers) { player.clear(); player.send('queue:join'); }
+    for (const player of protocolPlayers) {
+      if (player === partyMate) continue;
+      player.clear(); player.send('queue:join');
+    }
     await Promise.all(browserPlayers.map(({ page }) => button(page, 'Accept match').click()));
-    await Promise.all(protocolPlayers.map(async player => {
-      const ready = await player.find('queue:state', state => state.status === 'ready');
+    const offers = await Promise.all(protocolPlayers.map(async player => {
+      const ready = await player.find('queue:state', state => state.status === 'ready' && state.readyId !== previousPublicOffer);
       player.send('queue:confirm', { readyId: ready.readyId, accept: true });
+      return ready.readyId as string;
     }));
+    previousPublicOffer = offers[0];
     const joined = await until(() => {
       const event = host.observer.events.get('room:joined') as RoomJoin;
       return event.snapshot.matchId !== earlierMatch && event;
@@ -345,9 +415,30 @@ test('Chromium and Firefox: verified accounts, invite room, resume, and two six-
     assert.equal(joined.snapshot.mapId, mapId);
     assert.equal(joined.snapshot.mode, 'team_clash');
     assert.equal(new Set(joined.snapshot.players.map(player => player.id)).size, 6);
+    assert.equal(joined.snapshot.players.find(player => player.id === host.playerId)?.team,
+      joined.snapshot.players.find(player => player.id === partyMate.playerId)?.team);
     await Promise.all([assertActualHit(protocolPlayers, joined.snapshot), verifyBrowserControls()]);
 
     async function verifyBrowserControls() {
+      if (mapId === 'reactor_foundry') {
+        const { page } = host;
+        const menu = page.getByTestId('tactical-ping-menu');
+        await page.getByTestId('active-unit-label').waitFor();
+        await page.keyboard.down('g');
+        await menu.waitFor();
+        await page.keyboard.press('Escape');
+        await menu.waitFor({ state: 'hidden' });
+        await page.keyboard.up('g');
+        await page.getByTestId('active-unit-label').waitFor();
+        await page.keyboard.down('g');
+        await page.keyboard.press('ArrowUp');
+        await menu.locator('[data-kind="rally"][data-selected="true"]').waitFor();
+        await page.keyboard.up('g');
+        const ping = await partyMate.find('match:ping', payload => payload.matchId === joined.snapshot.matchId &&
+          payload.kind === 'rally' && payload.playerId === host.playerId);
+        assert.equal(ping.team, joined.snapshot.players.find(player => player.id === host.playerId)?.team);
+        await page.getByTestId('minimap-tactical-ping').filter({ visible: true }).first().waitFor();
+      }
       for (const { page, playerId, observer } of browserPlayers) {
         await page.getByTestId('active-unit-label').waitFor();
         const initial = await until(() => {

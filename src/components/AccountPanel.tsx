@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from 'react';
 import { useI18n } from '../i18n/LanguageContext';
-import { MULTIPLAYER_TEXT } from '../i18n/multiplayer';
+import { LOBBY_TEXT, MULTIPLAYER_TEXT } from '../i18n/multiplayer';
 import { postJson, type AccountSession } from '../net/account';
 import { LanguageSwitch } from './LanguageSwitch';
 
@@ -21,7 +21,11 @@ function clearAccountLink() {
   window.history.replaceState(null, '', url);
 }
 
-export function AccountPanel({ onSignIn }: { onSignIn: (session: AccountSession) => void }) {
+export function AccountPanel({ onSignIn, inviteCode, onDismissInvite }: {
+  onSignIn: (session: AccountSession) => void;
+  inviteCode?: string;
+  onDismissInvite?: () => void;
+}) {
   const { lang } = useI18n();
   const t = MULTIPLAYER_TEXT[lang];
   const [action] = useState(accountActionFromUrl);
@@ -68,6 +72,11 @@ export function AccountPanel({ onSignIn }: { onSignIn: (session: AccountSession)
         </div>
         <h1 id="account-title" className="font-display text-2xl font-bold text-white">{labels[mode]}</h1>
         <p className="mt-2 text-sm text-slate-400">{mode === 'verify' ? t.verifyInstruction : t.accountIntro}</p>
+        {inviteCode && <section aria-label={LOBBY_TEXT[lang].invitePreview} className="mt-4 space-y-1 rounded border border-cyan-400/25 bg-cyan-500/5 p-3 text-sm">
+          <p className="font-semibold">{LOBBY_TEXT[lang].invitePreview} · <code className="break-all text-cyan-300">{inviteCode}</code></p>
+          <p className="text-slate-300">{LOBBY_TEXT[lang].inviteLogin}</p>
+          {onDismissInvite && <button type="button" className="text-cyan-300" onClick={() => onDismissInvite()}>{t.close}</button>}
+        </section>}
         <form key={mode} onSubmit={submit} className="mt-5 flex flex-col gap-3.5">
           {emailField && <label className="grid gap-1 text-sm">{t.email}<input className={field} name="email" type="email" autoComplete="email" maxLength={254} required /></label>}
           {passwordField && <label className="grid gap-1 text-sm">{t.password}
