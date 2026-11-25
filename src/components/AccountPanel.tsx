@@ -1,7 +1,7 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { useI18n } from '../i18n/LanguageContext';
 import { LOBBY_TEXT, MULTIPLAYER_TEXT } from '../i18n/multiplayer';
-import { postJson, requestJson, type AccountSession } from '../net/account';
+import { ApiError, postJson, requestJson, setSessionToken, type AccountSession } from '../net/account';
 import { LanguageSwitch } from './LanguageSwitch';
 
 type AccountMode = 'login' | 'register' | 'forgot' | 'resend' | 'verify' | 'reset';
@@ -55,8 +55,20 @@ export function AccountPanel({ onSignIn, inviteCode, onDismissInvite }: {
     setMessage('');
     setPending(true);
     try {
-      const result = await postJson<AccountSession>('/api/auth/guest', {});
-      if ('playerId' in result) { onSignIn(result); return; }
+      let result: AccountSession;
+      try {
+        result = await postJson<AccountSession>('/api/auth/guest', {});
+      } catch (firstErr) {
+        const isTransient = !(firstErr instanceof ApiError) || firstErr.status >= 500;
+        if (!isTransient) throw firstErr;
+        await new Promise(resolve => window.setTimeout(resolve, 350));
+        result = await postJson<AccountSession>('/api/auth/guest', {});
+      }
+      if ('playerId' in result) {
+        setSessionToken(result.sessionToken);
+        onSignIn(result);
+        return;
+      }
       throw new Error(t.error);
     } catch (err) { setError(err instanceof Error && err.message ? err.message : t.error); }
     finally { setPending(false); }
@@ -77,7 +89,11 @@ export function AccountPanel({ onSignIn, inviteCode, onDismissInvite }: {
     setPending(true);
     try {
       const result = await postJson<AccountSession | { ok: true }>('/api/auth/' + mode, payload, key ? { 'x-playtest-key': key } : undefined);
-      if ((mode === 'login' || mode === 'register') && 'playerId' in result) { onSignIn(result); return; }
+      if ((mode === 'login' || mode === 'register') && 'playerId' in result) {
+        setSessionToken(result.sessionToken);
+        onSignIn(result);
+        return;
+      }
       if (mode === 'login') throw new Error(t.error);
       setMessage({ register: t.registerDone, forgot: t.forgotDone, resend: t.registerDone, verify: t.verifyDone, reset: t.resetDone }[mode]);
       clearAccountLink();

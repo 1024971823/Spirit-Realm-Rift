@@ -16,7 +16,7 @@ import type {
   WeaponId,
   WeaponSpec,
 } from './types.ts';
-import { normalizeDailyMissions } from './dailyMissions.ts';
+import { normalizeDailyMissions, sanitizeServerDailyMissions } from './dailyMissions.ts';
 
 export const ROBOT_CLASSES: Record<RobotClass, RobotClassSpec> = {
   s1_striker: {
@@ -363,6 +363,7 @@ export function normalizeControllerConfig(raw?: Partial<ControllerConfig> | null
 export function normalizePlayerProfile(
   raw: Partial<PlayerProfile> | null | undefined,
   fallbackId = 'op_local',
+  options?: { preserveMissionDay?: boolean },
 ): PlayerProfile {
   const src = raw && typeof raw === 'object' ? raw : {};
   const id = typeof src.id === 'string' && src.id.trim() ? src.id.trim() : fallbackId;
@@ -426,7 +427,9 @@ export function normalizePlayerProfile(
     loadout: sanitizeLoadoutForXp(src.loadout, DEFAULT_LOADOUT, xp),
     controller: normalizeControllerConfig(src.controller),
     stats,
-    dailyMissions: normalizeDailyMissions(src.dailyMissions, id),
+    dailyMissions: options?.preserveMissionDay
+      ? sanitizeServerDailyMissions(src.dailyMissions, id)
+      : normalizeDailyMissions(src.dailyMissions, id),
   };
 }
 

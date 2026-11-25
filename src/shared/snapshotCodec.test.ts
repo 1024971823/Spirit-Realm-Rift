@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { MAPS } from './catalog.ts';
-import { encodeCompactMatchSnapshot, SnapshotRehydrator } from './snapshotCodec.ts';
+import {
+  encodeCompactMatchSnapshot,
+  negotiateSnapshotProtocol,
+  SNAPSHOT_PROTOCOL_VERSION,
+  SnapshotRehydrator,
+} from './snapshotCodec.ts';
 import type { MatchSnapshot } from './types.ts';
 
 function makeFullSnapshot(): MatchSnapshot {
@@ -192,4 +197,47 @@ test('SnapshotRehydrator faithfully restores full MatchSnapshot from initial ful
   assert.equal(restored.hazards[2].kind, 'laser_sweeper');
   assert.equal(restored.killFeed.length, 1);
   assert.equal(restored.antiCheat.packetsValidated, 480);
+});
+
+test('negotiateSnapshotProtocol negotiates proto=2 for modern clients and defaults legacy clients to full proto=1', () => {
+  assert.equal(SNAPSHOT_PROTOCOL_VERSION, 2);
+  assert.equal(negotiateSnapshotProtocol('2'), 2);
+  assert.equal(negotiateSnapshotProtocol(String(SNAPSHOT_PROTOCOL_VERSION)), 2);
+  assert.equal(negotiateSnapshotProtocol(null), 1);
+  assert.equal(negotiateSnapshotProtocol(undefined), 1);
+  assert.equal(negotiateSnapshotProtocol('1'), 1);
+  assert.equal(negotiateSnapshotProtocol('99'), 1);
+});
+
+test('master-side SnapshotRehydrator produces complete full keyframe for reconnects after compact ticks', () => {
+  const initialFull = makeFullSnapshot();
+  const masterRehydrator = new SnapshotRehydrator();
+  masterRehydrator.hydrate(initialFull);
+
+  // Worker emits compact frame without roster meta, killFeed, or antiCheat
+  const tick200: MatchSnapshot = {
+    ...initialFull,
+    serverTick: 200,
+    elapsedSec: 55.25,
+    scoreAmber: 9,
+  };
+  const compact = encodeCompactMatchSnapshot(tick200, {
+    includeRosterMeta: false,
+    includeKillFeed: false,
+    includeAntiCheat: false,
+  });
+
+  // Master hydrates compact frame into latestFullSnapshot, then sends it to a reconnecting client
+  const reconnectKeyframe = masterRehydrator.hydrate(compact);
+  const freshClientRehydrator = new SnapshotRehydrator();
+  const clientView = freshClientRehydrator.hydrate(reconnectKeyframe);
+
+  assert.equal(clientView.serverTick, 200);
+  assert.equal(clientView.scoreAmber, 9);
+  assert.equal(clientView.durationSec, 240);
+  assert.equal(clientView.scoreLimit, 25);
+  assert.equal(clientView.players[0].callsign, 'Pilot-1');
+  assert.equal(clientView.players[0].beamHex, '#06B6D4');
+  assert.equal(clientView.killFeed[0].id, 'kf-1');
+  assert.equal(clientView.antiCheat.packetsValidated, 480);
 });

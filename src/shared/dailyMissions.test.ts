@@ -12,8 +12,10 @@ import {
   getUtcDayKey,
   msUntilNextUtcDay,
   normalizeDailyMissions,
+  sanitizeServerDailyMissions,
   shouldRefreshDailyMissions,
 } from './dailyMissions.ts';
+import { normalizePlayerProfile } from './catalog.ts';
 import type { DailyMissionContribution } from './types.ts';
 
 test('buildDailyMissionsForDay generates 3 deterministic missions covering combat, victory, and tactical slots', () => {
@@ -239,4 +241,26 @@ test('evaluateDailyMissionEligibility enforces publicOnly, minMatchSec, and acti
     evaluateDailyMissionEligibility({ ...base, forfeited: true }),
     { eligible: false, reason: 'forfeited' },
   );
+});
+
+test('sanitizeServerDailyMissions and preserveMissionDay keep server dayKey and progress despite skewed local clock', () => {
+  const serverDayKey = '2020-01-15';
+  const serverState = buildDailyMissionsForDay(serverDayKey, 'player-skew');
+  serverState.missions[0].progress = serverState.missions[0].target;
+  serverState.missions[0].completedAt = 1579046400000;
+  serverState.missions[0].claimedAt = 1579046500000;
+
+  const sanitized = sanitizeServerDailyMissions(serverState, 'player-skew');
+  assert.equal(sanitized.dayKey, serverDayKey);
+  assert.equal(sanitized.missions[0].progress, serverState.missions[0].target);
+  assert.equal(sanitized.missions[0].claimedAt, 1579046500000);
+
+  const preservedProfile = normalizePlayerProfile(
+    { id: 'player-skew', dailyMissions: serverState },
+    'player-skew',
+    { preserveMissionDay: true },
+  );
+  assert.equal(preservedProfile.dailyMissions?.dayKey, serverDayKey);
+  assert.equal(preservedProfile.dailyMissions?.missions[0].progress, serverState.missions[0].target);
+  assert.equal(preservedProfile.dailyMissions?.missions[0].claimedAt, 1579046500000);
 });

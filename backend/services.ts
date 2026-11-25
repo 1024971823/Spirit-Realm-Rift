@@ -111,11 +111,23 @@ export async function makeServices(onRevoked: (id: string, by: 'session' | 'acco
     throw err;
   }
 
+  const trustProxy = Boolean(process.env.TRUST_PROXY || process.env.K_SERVICE);
   function allowOrigin(req: IncomingMessage) {
     const origin = req.headers.origin;
     if (!origin) return false;
-    const expected = canonicalOrigin ?? (req.headers.host ? 'http://' + req.headers.host : null);
-    return origin === expected;
+    if (canonicalOrigin) return origin === canonicalOrigin;
+    const host = req.headers.host;
+    const forwardedHost =
+      trustProxy && typeof req.headers['x-forwarded-host'] === 'string'
+        ? req.headers['x-forwarded-host'].split(',')[0].trim()
+        : null;
+    try {
+      const parsed = new URL(origin);
+      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false;
+      return Boolean((host && parsed.host === host) || (forwardedHost && parsed.host === forwardedHost));
+    } catch {
+      return false;
+    }
   }
   async function authenticate(req: IncomingMessage): Promise<Auth | null> {
     const raw = cookieValue(req);

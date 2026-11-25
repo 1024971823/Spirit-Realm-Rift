@@ -16,7 +16,7 @@ import { TrainingModal } from './components/TrainingModal';
 import { LaserTagEngine, type HudLiveState } from './game/LaserTagEngine';
 import { useI18n } from './i18n/LanguageContext';
 import { LOBBY_TEXT, multiplayerError, MULTIPLAYER_TEXT } from './i18n/multiplayer';
-import { ApiError, postJson, requestJson, type AccountSession } from './net/account';
+import { ApiError, clearSessionToken, postJson, requestJson, type AccountSession } from './net/account';
 import { GameNetworkClient, type ChatMessage, type MatchSummaryPayload, type RoomPreview, type RoomSettings, type SessionView } from './net/clientSocket';
 import { INITIAL_TEAM_CREDITS, normalizePlayerProfile } from './shared/catalog';
 import { countClaimableDailyRewards } from './shared/dailyMissions';
@@ -114,13 +114,27 @@ export default function App() {
   const [inviteCode, setInviteState] = useState(inviteFromLocation);
   const [account, setAccount] = useState<AccountSession | null | undefined>(emailAction ? null : undefined);
   useEffect(() => { persistInvite(inviteCode); }, [inviteCode]);
+  const sessionGen = useRef(0);
   const setInviteCode = useCallback((code?: string) => setInviteState(code), []);
-  const signOut = useCallback(() => setAccount(null), []);
+  const handleSignIn = useCallback((next: AccountSession) => {
+    sessionGen.current += 1;
+    setLoadFailed(false);
+    setAccount(next);
+  }, []);
+  const signOut = useCallback(() => {
+    sessionGen.current += 1;
+    clearSessionToken();
+    setAccount(null);
+  }, []);
   const [loadFailed, setLoadFailed] = useState(false);
   const checkSession = useCallback(async () => {
+    const gen = ++sessionGen.current;
     setLoadFailed(false);
-    try { setAccount(await requestJson<AccountSession>('/api/auth/session')); }
-    catch (err) {
+    try {
+      const next = await requestJson<AccountSession>('/api/auth/session');
+      if (sessionGen.current === gen) setAccount(next);
+    } catch (err) {
+      if (sessionGen.current !== gen) return;
       if (err instanceof ApiError && err.status === 401) setAccount(null);
       else setLoadFailed(true);
     }
@@ -130,13 +144,14 @@ export default function App() {
   if (account === undefined) return <main className="grid h-full place-items-center text-slate-300">
     {loadFailed ? <div className="text-center"><p role="alert">{t.error}</p><button type="button" onClick={() => void checkSession()} className="mt-2 text-cyan-300">{t.retry}</button></div> : <p role="status">{t.loading}</p>}
   </main>;
-  if (account === null) return <AccountPanel onSignIn={setAccount} inviteCode={inviteCode} onDismissInvite={setInviteCode} />;
-  return <Arena key={account.playerId} playerId={account.playerId} moderator={account.moderator} onSignedOut={signOut}
+  if (account === null) return <AccountPanel onSignIn={handleSignIn} inviteCode={inviteCode} onDismissInvite={setInviteCode} />;
+  return <Arena key={account.playerId} playerId={account.playerId} initialProfile={account.profile} moderator={account.moderator} onSignedOut={signOut}
     inviteCode={inviteCode} setInviteCode={setInviteCode} />;
 }
 
-function Arena({ playerId, moderator, onSignedOut, inviteCode, setInviteCode }: {
+function Arena({ playerId, initialProfile, moderator, onSignedOut, inviteCode, setInviteCode }: {
   playerId: string;
+  initialProfile?: PlayerProfile;
   moderator?: boolean;
   onSignedOut: () => void;
   inviteCode?: string;
@@ -152,12 +167,15 @@ function Arena({ playerId, moderator, onSignedOut, inviteCode, setInviteCode }: 
   const phaseRef = useRef<GamePhase>('title');
   const [activeModal, setActiveModal] = useState<ActiveModal>(inviteCode ? 'lobby' : 'none');
   const activeModalRef = useRef<ActiveModal>(inviteCode ? 'lobby' : 'none');
-  const [profile, setProfile] = useState<PlayerProfile>(() => normalizePlayerProfile(null, playerId));
+  const [profile, setProfile] = useState<PlayerProfile>(() =>
+    normalizePlayerProfile(initialProfile ?? null, playerId, { preserveMissionDay: true }),
+  );
   const profileRef = useRef(profile);
   const [snapshot, setSnapshot] = useState<MatchSnapshot | null>(null);
   const [hud, setHud] = useState<HudLiveState>(INITIAL_HUD);
   const [connected, setConnected] = useState(false);
   const [synced, setSynced] = useState(false);
+  const [showReconnectBanner, setShowReconnectBanner] = useState(false);
   const [connectionIssue, setConnectionIssue] = useState<'superseded' | 'ineligible'>();
   const [rendererError, setRendererError] = useState(false);
   const [pingMs, setPingMs] = useState(0);
@@ -219,7 +237,9 @@ function Arena({ playerId, moderator, onSignedOut, inviteCode, setInviteCode }: 
     const version = saveVersion.current;
     try {
       const next = await requestJson<PlayerProfile>('/api/profile');
-      if (saveVersion.current === version) updateProfile(normalizePlayerProfile(next, playerId));
+      if (saveVersion.current === version) {
+        updateProfile(normalizePlayerProfile(next, playerId, { preserveMissionDay: true }));
+      }
     } catch { /* Most often a transient disconnect; keep the current configuration. */ }
   }, [playerId, updateProfile]);
   const persistProfile = useCallback((patch: Partial<PlayerProfile>) => {
@@ -228,15 +248,25 @@ function Arena({ playerId, moderator, onSignedOut, inviteCode, setInviteCode }: 
     saves.current = saves.current.then(async () => {
       try {
         const next = await postJson<PlayerProfile>('/api/profile', patch);
-        if (version === saveVersion.current) updateProfile(normalizePlayerProfile(next, playerId));
+        if (version === saveVersion.current) {
+          updateProfile(normalizePlayerProfile(next, playerId, { preserveMissionDay: true }));
+        }
       } catch (err) {
         if (version === saveVersion.current) {
-          setNotice(err instanceof Error && err.message ? err.message : MULTIPLAYER_TEXT[langRef.current].error);
+          const msg = err instanceof Error ? err.message : '';
+          const localized =
+            !msg || ['unavailable', 'origin', 'unauthorized'].includes(msg)
+              ? multiplayerError(langRef.current, msg || 'unavailable')
+              : msg;
+          setNotice(localized);
           void loadProfile();
         }
       }
     });
   }, [loadProfile, playerId, updateProfile]);
+  const handleMissionsProfileUpdated = useCallback((next: PlayerProfile) => {
+    updateProfile(normalizePlayerProfile(next, playerId, { preserveMissionDay: true }));
+  }, [playerId, updateProfile]);
   const quickSwitch = useCallback((robotClass: RobotClass) => {
     persistProfile({ loadout: { ...profileRef.current.loadout, robotClass } });
   }, [persistProfile]);
@@ -274,12 +304,19 @@ function Arena({ playerId, moderator, onSignedOut, inviteCode, setInviteCode }: 
     let snapshotRoundId: string | undefined;
     let resumePhase: GamePhase = 'playing';
     let active = true;
+    const initialBannerTimer = window.setTimeout(() => {
+      if (active) setShowReconnectBanner(true);
+    }, 1200);
     net.setListeners({
       onConnectionChange: (open, code) => {
         if (!active) return;
         setConnected(open);
-        if (open) return;
+        if (open) {
+          setConnectionIssue(undefined);
+          return;
+        }
         setSynced(false);
+        setShowReconnectBanner(true);
         updateJoinAttempt();
         if (phaseRef.current === 'playing' || phaseRef.current === 'paused') {
           resumePhase = phaseRef.current;
@@ -290,7 +327,7 @@ function Arena({ playerId, moderator, onSignedOut, inviteCode, setInviteCode }: 
         else if (code === 4403) setConnectionIssue('ineligible');
         else if (code === 4001 || code === 4401) void requestJson('/api/auth/session')
           .then(() => { if (active) setConnectionIssue('ineligible'); })
-          .catch(() => { if (active) onSignedOut(); });
+          .catch(err => { if (active && err instanceof ApiError && err.status === 401) onSignedOut(); });
         else void requestJson('/api/auth/session').catch(err => { if (active && err instanceof ApiError && err.status === 401) onSignedOut(); });
       },
       onSession: (next) => {
@@ -393,6 +430,7 @@ function Arena({ playerId, moderator, onSignedOut, inviteCode, setInviteCode }: 
     void requestJson<{ playerIds: string[] }>('/api/chat/blocks').then(body => { if (active && Array.isArray(body.playerIds)) setBlockedIds(body.playerIds); }).catch(() => {});
     return () => {
       active = false;
+      window.clearTimeout(initialBannerTimer);
       net.dispose();
       engine?.dispose();
       networkRef.current = null;
@@ -544,8 +582,8 @@ function Arena({ playerId, moderator, onSignedOut, inviteCode, setInviteCode }: 
       <section className="rounded bg-[#101926] p-6 text-center"><p role="status">{t.resultPending}</p><button type="button" className="mt-4 text-cyan-300" onClick={dismissResult}>{t.lobby}</button></section>
     </div>}
     {activeModal === 'loadout' && <LoadoutModal profile={profile} onUpdateLoadout={(loadout: LoadoutConfig) => persistProfile({ loadout })} onClose={() => setActiveModal('none')} />}
-    {activeModal === 'missions' && <DailyMissionsModal profile={profile} onProfileUpdated={next => updateProfile(normalizePlayerProfile(next, playerId))} onClose={() => setActiveModal('none')} />}
-    {activeModal === 'training' && <TrainingModal progress={trainingProgress} activeRobotClass={profile.loadout.robotClass} onSelectRobotClass={quickSwitch} onProgressChange={updateTrainingProgress} onGoToLobby={() => setActiveModal('lobby')} onClose={() => setActiveModal('none')} />}
+    {activeModal === 'missions' && <DailyMissionsModal profile={profile} onProfileUpdated={handleMissionsProfileUpdated} onClose={() => setActiveModal('none')} />}
+    {activeModal === 'training' && <TrainingModal progress={trainingProgress} activeRobotClass={profile.loadout.robotClass} controller={profile.controller} onSelectRobotClass={quickSwitch} onProgressChange={updateTrainingProgress} onGoToLobby={() => setActiveModal('lobby')} onClose={() => setActiveModal('none')} />}
     {activeModal === 'lobby' && <MultiplayerLobby view={view} playerId={playerId} connected={connected && synced} chat={chat}
       rendererError={rendererError} preview={preview} inviteCode={inviteCode} joining={Boolean(joinAttempt)}
       onClose={() => setActiveModal('none')} onQueue={join => { send(join ? 'queue:join' : 'queue:leave'); }}
@@ -561,8 +599,8 @@ function Arena({ playerId, moderator, onSignedOut, inviteCode, setInviteCode }: 
       onUpdateController={(controller: ControllerConfig) => persistProfile({ controller })} onClose={() => setActiveModal('none')} />}
     {activeModal === 'moderation' && moderator && <ModerationPanel onClose={() => setActiveModal('none')} />}
     {view.offer && synced && view.room?.phase !== 'active' && <MatchReady key={view.offer.offerId} offer={view.offer} connected={connected} rendererError={rendererError} onRespond={accept => { send('queue:confirm', { readyId: view.offer?.offerId, accept }); }} />}
-    {(!connected || !synced || rendererError || notice) && <div className="pointer-events-none fixed inset-x-0 top-2 z-[60] flex flex-col items-center gap-2 px-4 text-sm">
-      {(!connected || !synced) && <div role="status" className="pointer-events-auto rounded border border-amber-700 bg-[#191303] px-3 py-2 text-amber-200">
+    {((!connected || !synced) && (showReconnectBanner || Boolean(connectionIssue)) || rendererError || notice) && <div className="pointer-events-none fixed inset-x-0 top-2 z-[60] flex flex-col items-center gap-2 px-4 text-sm">
+      {(!connected || !synced) && (showReconnectBanner || Boolean(connectionIssue)) && <div role="status" className="pointer-events-auto rounded border border-amber-700 bg-[#191303] px-3 py-2 text-amber-200">
         {connectionIssue === 'superseded' ? t.superseded : connectionIssue === 'ineligible' ? multiplayerError(lang, 'ineligible') : t.reconnecting}
         {connectionIssue && <button type="button" className="ml-2 text-cyan-300" onClick={() => { setConnectionIssue(undefined); networkRef.current?.connect(); }}>{t.retry}</button>}
       </div>}

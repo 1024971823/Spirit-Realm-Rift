@@ -9,8 +9,13 @@ import type {
   RobotClass,
   TeamId,
 } from '../shared/types';
-import { SnapshotRehydrator, type CompactMatchSnapshot } from '../shared/snapshotCodec';
+import {
+  SNAPSHOT_PROTOCOL_VERSION,
+  SnapshotRehydrator,
+  type CompactMatchSnapshot,
+} from '../shared/snapshotCodec';
 import type { PartyView, SocialInvite, TacticalPing } from '../shared/social';
+import { getSessionToken } from './account';
 
 export interface ChatMessage {
   id: string;
@@ -138,6 +143,7 @@ export class GameNetworkClient {
   private clockOffsetMs: number | undefined;
   private retryCount = 0;
   private snapshotRehydrator = new SnapshotRehydrator();
+  private handshakeQueue: Array<{ type: string; payload: object }> = [];
 
   setListeners(listeners: ClientSocketListeners): void {
     this.listeners = listeners;
@@ -148,7 +154,11 @@ export class GameNetworkClient {
     window.clearTimeout(this.reconnectTimer);
     const url = new URL('/ws', window.location.href);
     url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
-    const ws = new WebSocket(url);
+    url.searchParams.set('proto', String(SNAPSHOT_PROTOCOL_VERSION));
+    const token = getSessionToken();
+    const ws = token
+      ? new WebSocket(url.toString(), ['prism.v2', `prism.auth.${token}`])
+      : new WebSocket(url.toString());
     this.clockOffsetMs = undefined;
     this.snapshotRehydrator.reset();
     this.ws = ws;
@@ -168,6 +178,12 @@ export class GameNetworkClient {
       };
       this.pingTimer = window.setInterval(ping, 2500);
       ping();
+      if (this.handshakeQueue.length > 0) {
+        const queued = this.handshakeQueue.splice(0);
+        for (const item of queued) {
+          this.send(item.type, item.payload);
+        }
+      }
     };
 
     ws.onmessage = (ev) => {
@@ -212,12 +228,21 @@ export class GameNetworkClient {
         case 'room:joined':
         case 'room:reset':
           if (payload.snapshot) {
+            const snapObj = payload.snapshot as Record<string, unknown>;
+            if ('compact' in snapObj && snapObj.compact !== 1) {
+              this.listeners.onError?.({ action: msg.type, code: 'protocol_mismatch' });
+              break;
+            }
             this.listeners.onSnapshot?.(
-              this.snapshotRehydrator.hydrate(payload.snapshot as MatchSnapshot | CompactMatchSnapshot),
+              this.snapshotRehydrator.hydrate(snapObj as unknown as MatchSnapshot | CompactMatchSnapshot),
             );
           }
           break;
         case 'match:state':
+          if ('compact' in payload && payload.compact !== 1) {
+            this.listeners.onError?.({ action: 'match:state', code: 'protocol_mismatch' });
+            break;
+          }
           this.listeners.onSnapshot?.(
             this.snapshotRehydrator.hydrate(payload as unknown as MatchSnapshot | CompactMatchSnapshot),
           );
@@ -250,6 +275,7 @@ export class GameNetworkClient {
       window.clearTimeout(this.pendingOpen);
       window.clearInterval(this.pingTimer);
       this.ws = null;
+      this.handshakeQueue = [];
       this.listeners.onConnectionChange?.(false, code);
       if (!this.disposed && ![4001, 4009, 4401, 4403, 4409].includes(code)) {
         const delay = Math.min(700 * 2 ** Math.min(this.retryCount++, 3), 2800) + Math.random() * 350;
@@ -259,6 +285,13 @@ export class GameNetworkClient {
   }
 
   send(type: string, payload: object = {}): boolean {
+    if (this.ws?.readyState === WebSocket.CONNECTING && type !== 'ping' && !type.startsWith('player:')) {
+      if (this.handshakeQueue.length < 4) {
+        this.handshakeQueue.push({ type, payload });
+        return true;
+      }
+      return false;
+    }
     if (this.ws?.readyState !== WebSocket.OPEN || this.ws.bufferedAmount > 262_144) return false;
     this.ws.send(JSON.stringify({ type, payload }));
     return true;
@@ -266,6 +299,7 @@ export class GameNetworkClient {
 
   dispose(): void {
     this.disposed = true;
+    this.handshakeQueue = [];
     this.snapshotRehydrator.reset();
     window.clearTimeout(this.reconnectTimer);
     window.clearTimeout(this.pendingOpen);

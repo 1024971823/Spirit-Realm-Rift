@@ -74,6 +74,25 @@ const emailOf = (v: unknown) =>
 const passwordOk = (v: unknown): v is string => typeof v === 'string' && v.length >= 12 && Buffer.byteLength(v) <= 256;
 const cookieValue = (req: IncomingMessage) =>
   req.headers.cookie?.split(/;\s*/).find(v => v.startsWith(sessionCookie + '='))?.slice(sessionCookie.length + 1);
+const bearerValue = (req: IncomingMessage) => {
+  const auth = req.headers.authorization;
+  if (typeof auth !== 'string') return undefined;
+  const match = /^Bearer\s+([\w-]{43})$/.exec(auth.trim());
+  return match?.[1];
+};
+const wsProtocolToken = (req: IncomingMessage) => {
+  const proto = req.headers['sec-websocket-protocol'];
+  if (typeof proto !== 'string') return undefined;
+  for (const part of proto.split(',')) {
+    const trimmed = part.trim();
+    if (trimmed.startsWith('prism.auth.')) {
+      const candidate = trimmed.slice('prism.auth.'.length);
+      if (isToken(candidate)) return candidate;
+    }
+  }
+  return undefined;
+};
+const tokenFromRequest = (req: IncomingMessage) => cookieValue(req) ?? bearerValue(req) ?? wsProtocolToken(req);
 const wrap = (handler: (req: Request, res: Response) => Promise<unknown>): RequestHandler => (req, res, next) => void handler(req, res).catch(next);
 
 async function hashPassword(password: string, salt = randomBytes(16).toString('hex')) {
@@ -96,7 +115,6 @@ function pairKey(a: string, b: string): [string, string, string] {
 export async function makeMemoryServices(onRevoked: (id: string, by: 'session' | 'account' | 'ban') => void = () => {}) {
   const { ORIGIN, PLAYTEST_KEY } = process.env;
   const canonicalOrigin = ORIGIN ? new URL(ORIGIN).origin : null;
-  const admins = new Set((process.env.MODERATOR_EMAILS || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean));
   const filtered = (process.env.CHAT_FILTER_TERMS || '').split(',').map(s => s.trim().normalize('NFKC').toLowerCase()).filter(Boolean);
 
   const accounts = new Map<string, MemoryAccount>();
@@ -118,15 +136,22 @@ export async function makeMemoryServices(onRevoked: (id: string, by: 'session' |
 
   const placeholderHash = await hashPassword('placeholder-password-never-used');
 
+  const trustProxy = Boolean(process.env.TRUST_PROXY || process.env.K_SERVICE);
+
   function allowOrigin(req: IncomingMessage): boolean {
     const origin = req.headers.origin;
     if (!origin) return false;
     if (canonicalOrigin) return origin === canonicalOrigin;
     const host = req.headers.host;
-    if (!host) return false;
+    const forwardedHost =
+      trustProxy && typeof req.headers['x-forwarded-host'] === 'string'
+        ? req.headers['x-forwarded-host'].split(',')[0].trim()
+        : null;
+    if (!host && !forwardedHost) return false;
     try {
       const parsed = new URL(origin);
-      return parsed.host === host && (parsed.protocol === 'https:' || parsed.protocol === 'http:');
+      if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return false;
+      return Boolean((host && parsed.host === host) || (forwardedHost && parsed.host === forwardedHost));
     } catch {
       return false;
     }
@@ -136,14 +161,19 @@ export async function makeMemoryServices(onRevoked: (id: string, by: 'session' |
     if (canonicalOrigin?.startsWith('https://')) return true;
     const forwarded = req?.headers['x-forwarded-proto'];
     if (typeof forwarded === 'string' && forwarded.split(',')[0].trim() === 'https') return true;
+    const origin = req?.headers.origin;
+    if (typeof origin === 'string' && origin.startsWith('https://')) return true;
+    const referer = req?.headers.referer;
+    if (typeof referer === 'string' && referer.startsWith('https://')) return true;
     return false;
   }
 
   function setSession(req: IncomingMessage, res: Response, raw: string, duration = sessionSeconds) {
     const secure = isHttpsRequest(req);
+    const sameSite = secure ? 'SameSite=None; Secure; Partitioned' : 'SameSite=Lax';
     res.setHeader(
       'Set-Cookie',
-      sessionCookie + '=' + raw + '; Max-Age=' + duration + '; Path=/; HttpOnly; SameSite=Lax' + (secure ? '; Secure' : ''),
+      `${sessionCookie}=${raw}; Max-Age=${duration}; Path=/; HttpOnly; ${sameSite}`,
     );
   }
 
@@ -153,7 +183,7 @@ export async function makeMemoryServices(onRevoked: (id: string, by: 'session' |
   }
 
   async function authenticate(req: IncomingMessage): Promise<Auth | null> {
-    const raw = cookieValue(req);
+    const raw = tokenFromRequest(req);
     if (!isToken(raw)) return null;
     const sessionId = digest(raw);
     const session = sessions.get(sessionId);
@@ -551,11 +581,8 @@ export async function makeMemoryServices(onRevoked: (id: string, by: 'session' |
       const auth = await authenticate(req);
       return auth ? handler(req, res, auth) : fail(res, 401, '请先登录');
     });
-  const moderator = (handler: (req: Request, res: Response, auth: Auth) => Promise<unknown>) =>
-    authorized(async (req, res, auth) => {
-      if (!admins.has(auth.email)) return fail(res, 403, '需要管理权限');
-      return handler(req, res, auth);
-    });
+  const moderator = (_handler: (req: Request, res: Response, auth: Auth) => Promise<unknown>) =>
+    authorized(async (_req, res) => fail(res, 403, '试玩模式未启用管理权限'));
 
   async function authLimit(req: Request, action: string, email: string, count: number) {
     const ip = req.ip || req.socket.remoteAddress || 'unknown';
@@ -573,7 +600,10 @@ export async function makeMemoryServices(onRevoked: (id: string, by: 'session' |
     }, originGuard);
 
     app.get('/api/auth/mode', (_req, res) => res.json({ standalone: true, ephemeral: true }));
-    app.get('/api/auth/session', authorized(async (_req, res, { playerId, email }) => res.json({ playerId, email, moderator: admins.has(email) })));
+    app.get('/api/auth/session', authorized(async (_req, res, { playerId, email }) => {
+      const profile = await getProfile(playerId);
+      return res.json({ playerId, email, moderator: false, profile });
+    }));
 
     app.post('/api/auth/guest', wrap(async (req, res) => {
       const ip = req.ip || req.socket.remoteAddress || 'unknown';
@@ -583,6 +613,7 @@ export async function makeMemoryServices(onRevoked: (id: string, by: 'session' |
       const callsign = rawName.length >= 2 && !filtered.some(term => rawName.toLowerCase().includes(term)) ? rawName.slice(0, 18) : `Prism-${id.slice(-4).toUpperCase()}`;
       const email = `guest-${id.slice(0, 8)}@prism.local`;
       const friendCode = generateFriendCode(accountsByCode);
+      const profile = normalizePlayerProfile({ id, callsign }, id);
       const account: MemoryAccount = {
         id,
         email,
@@ -593,14 +624,21 @@ export async function makeMemoryServices(onRevoked: (id: string, by: 'session' |
         mutedUntil: 0,
         friendCode,
         allowInvites: true,
-        profile: normalizePlayerProfile({ id, callsign }, id),
+        profile,
       };
       accounts.set(id, account);
       accountsByEmail.set(email, id);
       accountsByCode.set(friendCode, id);
       const raw = createSessionFor(account);
       setSession(req, res, raw);
-      return res.json({ ok: true, playerId: id, email, moderator: false });
+      return res.json({
+        ok: true,
+        playerId: id,
+        email,
+        moderator: false,
+        profile: structuredClone(profile),
+        sessionToken: raw,
+      });
     }));
 
     app.post('/api/auth/register', wrap(async (req, res) => {
@@ -633,7 +671,14 @@ export async function makeMemoryServices(onRevoked: (id: string, by: 'session' |
       accountsByCode.set(friendCode, id);
       const raw = createSessionFor(account);
       setSession(req, res, raw);
-      return res.json({ ok: true, playerId: id, email, moderator: admins.has(email) });
+      return res.json({
+        ok: true,
+        playerId: id,
+        email,
+        moderator: false,
+        profile: structuredClone(profile),
+        sessionToken: raw,
+      });
     }));
 
     app.post('/api/auth/resend', wrap(async (req, res) => {
@@ -670,11 +715,18 @@ export async function makeMemoryServices(onRevoked: (id: string, by: 'session' |
       if (!account.verified) return fail(res, 403, '请先验证邮箱');
       const raw = createSessionFor(account);
       setSession(req, res, raw);
-      return res.json({ ok: true, playerId: account.id, email, moderator: admins.has(email) });
+      return res.json({
+        ok: true,
+        playerId: account.id,
+        email,
+        moderator: false,
+        profile: structuredClone(normalizePlayerProfile(account.profile, account.id)),
+        sessionToken: raw,
+      });
     }));
 
     app.post('/api/auth/logout', wrap(async (req, res) => {
-      const raw = cookieValue(req);
+      const raw = tokenFromRequest(req);
       if (isToken(raw)) {
         const id = digest(raw);
         sessions.delete(id);

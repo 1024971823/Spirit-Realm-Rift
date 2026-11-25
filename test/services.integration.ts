@@ -88,6 +88,8 @@ test('PostgreSQL and Redis: verification, recovery, exactly-once XP, owner fenci
   assert.equal(missionsBeforeClaim.status, 200);
   assert.ok(missionsBeforeClaim.json.serverTimeMs > 0);
   assert.equal(missionsBeforeClaim.json.eligibilityPolicy.publicOnly, true);
+  const creditsBeforeClaims = Number(missionsBeforeClaim.json.credits);
+  assert.ok(Number.isFinite(creditsBeforeClaims));
   const completedMissions = missionsBeforeClaim.json.dailyMissions.missions as Array<{ id: string; rewardCredits: number }>;
   let expectedMissionCredits = 0;
   for (const m of completedMissions) {
@@ -103,7 +105,7 @@ test('PostgreSQL and Redis: verification, recovery, exactly-once XP, owner fenci
     call('missions/claim-bonus', {}, cookie),
   ]);
   assert.deepEqual([bonus1.status, bonus2.status].sort((a, b) => a - b), [200, 409]);
-  assert.equal((await services.getProfile(playerId)).stats.credits, expectedMissionCredits + 200);
+  assert.equal((await services.getProfile(playerId)).stats.credits, creditsBeforeClaims + expectedMissionCredits + 200);
 
   // Simulate UTC day rollover by backdating stored dailyMissions.dayKey in PostgreSQL
   const oldMissionId = completedMissions[0].id.replace(/^\d{4}-\d{2}-\d{2}/, '2020-01-01');

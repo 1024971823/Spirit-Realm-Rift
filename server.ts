@@ -39,6 +39,9 @@ import {
 } from './src/shared/dailyMissions.ts';
 import {
   encodeCompactMatchSnapshot,
+  negotiateSnapshotProtocol,
+  SnapshotRehydrator,
+  type CompactMatchSnapshot,
 } from './src/shared/snapshotCodec.ts';
 import {
   computeObstacleAvoidanceDir,
@@ -198,7 +201,12 @@ type GameEvent =
   | { type: 'direct'; matchId: string; playerId: string; wire: string }
   | { type: 'ping'; matchId: string; ping: TacticalPing }
   | { type: 'finish'; matchId: string; room: ServerRoom; adjudication?: Adjudication };
-const matches = new Map<string, { room: ServerRoom; worker: GameWorker; snapshotWire?: string }>();
+const matches = new Map<string, {
+  room: ServerRoom;
+  worker: GameWorker;
+  rehydrator: SnapshotRehydrator;
+  latestFullSnapshot?: MatchSnapshot;
+}>();
 let gamePool: ReturnType<typeof createGamePool<GameCommand, GameEvent>>;
 
 interface Member {
@@ -223,6 +231,7 @@ interface Connection {
   commandChain: Promise<void>;
   alive: boolean;
   playUntil: number;
+  snapshotProtocol: 1 | 2;
 }
 interface QueueEntry { id: string; queuedAt: number; order: number; partyId?: string }
 interface ReadyCheck {
@@ -590,12 +599,18 @@ function broadcastToRoom(room: ServerRoom, type: string, payload: unknown): void
   broadcastWire(room, JSON.stringify({ type, payload }));
 }
 
-function broadcastWire(room: ServerRoom, msg: string): void {
+function broadcastWire(room: ServerRoom, msg: string, fullSnapshot?: MatchSnapshot): void {
+  let legacyWire: string | undefined;
   for (const member of room.members.values()) {
     const conn = connections.get(member.id);
     if (!conn || member.detachedAt !== undefined || member.forfeited || conn.ws.readyState !== WebSocket.OPEN) continue;
     if (conn.ws.bufferedAmount > MAX_SEND_BUFFER) continue;
-    conn.ws.send(msg);
+    if (fullSnapshot && conn.snapshotProtocol === 1) {
+      legacyWire ??= JSON.stringify({ type: 'match:state', payload: fullSnapshot });
+      conn.ws.send(legacyWire);
+    } else {
+      conn.ws.send(msg);
+    }
   }
 }
 
@@ -1069,8 +1084,10 @@ function stepRoom(room: ServerRoom, now: number): void {
     if (room.phase === 'active') {
       const fullSnap = serializeRoomSnapshot(room);
       const latestKillId = fullSnap.killFeed.at(-1)?.id;
-      const includeKillFeed = latestKillId !== room.lastBroadcastKillId;
-      if (includeKillFeed) room.lastBroadcastKillId = latestKillId;
+      const killChanged = latestKillId !== room.lastBroadcastKillId;
+      // Periodically resend non-empty killFeed at 1 Hz so any frame skipped by backpressure recovers cleanly.
+      const includeKillFeed = killChanged || (fullSnap.killFeed.length > 0 && room.serverTick % 20 === 0);
+      if (killChanged && !snapshotBackpressure) room.lastBroadcastKillId = latestKillId;
       const compactSnap = encodeCompactMatchSnapshot(fullSnap, {
         includeRosterMeta: room.serverTick <= 2 || room.serverTick % 40 === 0,
         includeKillFeed,
@@ -1622,8 +1639,8 @@ function joined(room: ServerRoom, conn: Connection | undefined): void {
   if (!conn || room.phase !== 'active') return;
   const member = room.members.get(conn.auth.playerId);
   if (!member || !online(member)) return;
-  const wire = room.matchId && matches.get(room.matchId)?.snapshotWire;
-  const snapshot = wire ? (JSON.parse(wire) as {payload: MatchSnapshot}).payload : serializeRoomSnapshot(room);
+  // Always send a complete hydrated keyframe on initial join and mid-match reconnect.
+  const snapshot = (room.matchId && matches.get(room.matchId)?.latestFullSnapshot) || serializeRoomSnapshot(room);
   send(conn, 'room:joined', { roomId: room.config.roomId, playerId: member.id, team: member.team, snapshot });
 }
 
@@ -1815,7 +1832,10 @@ async function launch(room: ServerRoom, stillEligible = () => true): Promise<boo
       return false;
     }
     room.countdownEndsAt = null;
-    matches.set(matchId, { room, worker });
+    const rehydrator = new SnapshotRehydrator();
+    const initialFull = serializeRoomSnapshot(room);
+    rehydrator.hydrate(initialFull);
+    matches.set(matchId, { room, worker, rehydrator, latestFullSnapshot: initialFull });
     roomUpdate(room);
     for (const member of room.members.values()) joined(room, connections.get(member.id));
     return true;
@@ -2483,14 +2503,21 @@ function expireSession(conn: Connection): void {
   conn.ws.close(4401, 'Session unavailable');
 }
 
-function acceptSocket(ws: WebSocket, req: http.IncomingMessage, auth: Auth, profile: PlayerProfile, playUntil: number): void {
+function acceptSocket(
+  ws: WebSocket,
+  req: http.IncomingMessage,
+  auth: Auth,
+  profile: PlayerProfile,
+  playUntil: number,
+  snapshotProtocol: 1 | 2 = 1,
+): void {
   const id = auth.playerId;
   const now = Date.now();
   const previous = connections.get(id);
   const party = partyByPlayer.get(id);
   const partyMember = party?.members.get(id);
   if (party && partyMember?.detachedAt !== undefined && now - partyMember.detachedAt >= SEAT_MS) dropPartyMember(party, id);
-  const conn: Connection = { ws, auth, req, profile, playUntil, windowAt: now, packets: 0, commands: 0, pendingCommands: 0, commandChain: Promise.resolve(), eligibilityCheck: false, alive: true };
+  const conn: Connection = { ws, auth, req, profile, playUntil, snapshotProtocol, windowAt: now, packets: 0, commands: 0, pendingCommands: 0, commandChain: Promise.resolve(), eligibilityCheck: false, alive: true };
   connections.set(id, conn);
   previous?.ws.close(4409, 'Session superseded');
   if (party && partyMember && partyByPlayer.get(id) === party) {
@@ -2695,8 +2722,21 @@ function handleGameEvent(worker: GameWorker, event: GameEvent): void {
   if (!match || match.worker !== worker || match.room.phase !== 'active') return;
   const room = match.room;
   if (event.type === 'broadcast') {
-    if (event.snapshot) match.snapshotWire = event.wire;
-    broadcastWire(room, event.wire);
+    if (event.snapshot) {
+      let fullSnapshot: MatchSnapshot | undefined;
+      try {
+        const parsed = JSON.parse(event.wire) as { payload?: MatchSnapshot | CompactMatchSnapshot };
+        if (parsed?.payload) {
+          fullSnapshot = match.rehydrator.hydrate(parsed.payload);
+          match.latestFullSnapshot = fullSnapshot;
+        }
+      } catch {
+        // Keep last valid full keyframe if a broadcast payload cannot be parsed.
+      }
+      broadcastWire(room, event.wire, fullSnapshot);
+    } else {
+      broadcastWire(room, event.wire);
+    }
   } else if (event.type === 'direct') {
     const conn = connections.get(event.playerId);
     const seat = room.members.get(event.playerId);
@@ -2843,9 +2883,20 @@ async function startServer(): Promise<void> {
     })().catch(next);
   });
 
+  const server = http.createServer(app);
+  let viteServer: { close(): Promise<void> } | undefined;
   if (process.env.NODE_ENV !== 'production') {
     const { createServer: createViteServer } = await import('vite');
-    const vite = await createViteServer({ server: { middlewareMode: true, ...(process.env.NODE_ENV === 'test' ? { hmr: false } : {}) }, appType: 'spa' });
+    const hmrDisabled = process.env.DISABLE_HMR === 'true' || process.env.NODE_ENV === 'test';
+    const vite = await createViteServer({
+      server: {
+        middlewareMode: true,
+        ws: { server },
+        hmr: hmrDisabled ? false : true,
+      },
+      appType: 'spa',
+    });
+    viteServer = vite;
     app.use(vite.middlewares);
   } else {
     const distDir = path.resolve(__dirname, 'dist');
@@ -2856,12 +2907,18 @@ async function startServer(): Promise<void> {
     if (!res.headersSent) res.status(err?.status === 400 || err?.status === 413 ? err.status : 503).json({ error: 'unavailable' });
   }) satisfies import('express').ErrorRequestHandler);
 
-  const server = http.createServer(app);
-  const wss = new WebSocketServer({ noServer: true, maxPayload: 4096, perMessageDeflate: false });
+  const wss = new WebSocketServer({
+    noServer: true,
+    maxPayload: 4096,
+    perMessageDeflate: false,
+    handleProtocols: protocols => (protocols.has('prism.v2') ? 'prism.v2' : false),
+  });
   const internalKey = process.env.GAME_WORKER_KEY;
   let connecting = 0;
   server.on('upgrade', (req, socket, head) => {
-    if (req.url !== '/ws') return;
+    const reqUrl = new URL(req.url || '/', 'http://localhost');
+    if (reqUrl.pathname !== '/ws') return;
+    const snapshotProtocol = negotiateSnapshotProtocol(reqUrl.searchParams.get('proto'));
     function reject(status: string) { if (!socket.destroyed) socket.end('HTTP/1.1 ' + status + '\r\nConnection: close\r\nContent-Length: 0\r\n\r\n'); }
     if (closing || connecting > 128) { reject('503 Service Unavailable'); return; }
     if (internalKey) {
@@ -2885,7 +2942,7 @@ async function startServer(): Promise<void> {
           (revocations.get('ban:' + auth.playerId) ?? 0) > upgradeEpoch) { reject('401 Unauthorized'); return; }
       if (connections.size >= ONLINE_LIMIT && !connections.has(auth.playerId)) { reject('503 Service Unavailable'); return; }
       clearTimeout(upgradeTimeout);
-      wss.handleUpgrade(req, socket, head, ws => acceptSocket(ws, req, auth, profile, playUntil));
+      wss.handleUpgrade(req, socket, head, ws => acceptSocket(ws, req, auth, profile, playUntil, snapshotProtocol));
     })().catch(err => {
       console.error('Socket upgrade could not authenticate:', err);
       reject('503 Service Unavailable');
@@ -2960,7 +3017,11 @@ async function startServer(): Promise<void> {
     const forcedExit = setTimeout(() => process.exit(0), 7000).unref();
     const ownerIds = gamePool.live().map(w => w.id);
     gamePool.close();
-    await Promise.allSettled([...ownerIds.map(id => services.revokeOwner(id)), services.lobby.release(OWNER_ID)]);
+    await Promise.allSettled([
+      ...ownerIds.map(id => services.revokeOwner(id)),
+      services.lobby.release(OWNER_ID),
+      ...(viteServer ? [viteServer.close()] : []),
+    ]);
     await services.close();
     clearTimeout(forcedExit);
     process.exit(0);

@@ -9,6 +9,7 @@ import {
   DAILY_MISSION_ALL_CLEAR_BONUS,
   msUntilNextUtcDay,
   normalizeDailyMissions,
+  sanitizeServerDailyMissions,
   shouldRefreshDailyMissions,
 } from '../shared/dailyMissions';
 import type {
@@ -72,7 +73,9 @@ export const DailyMissionsModal: React.FC<DailyMissionsModalProps> = ({
 }) => {
   const { lang, t } = useI18n();
   const [missionsState, setMissionsState] = useState<DailyMissionsState>(() =>
-    normalizeDailyMissions(profile.dailyMissions, profile.id),
+    profile.dailyMissions
+      ? sanitizeServerDailyMissions(profile.dailyMissions, profile.id)
+      : normalizeDailyMissions(profile.dailyMissions, profile.id),
   );
   const [credits, setCredits] = useState<number>(profile.stats.credits);
   const [policy, setPolicy] = useState<DailyMissionEligibilityPolicy | null>(null);
@@ -80,13 +83,20 @@ export const DailyMissionsModal: React.FC<DailyMissionsModalProps> = ({
   const resetDeadlineRef = useRef<number>(computeServerResetDeadline(msUntilNextUtcDay(), Date.now()));
   const fetchingRef = useRef(false);
   const profileRef = useRef(profile);
+  const onProfileUpdatedRef = useRef(onProfileUpdated);
   const [remainingMs, setRemainingMs] = useState<number>(() => msUntilNextUtcDay());
   const [claimingId, setClaimingId] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<{ kind: 'success' | 'error'; text: string } | null>(null);
 
   useEffect(() => {
+    onProfileUpdatedRef.current = onProfileUpdated;
+  }, [onProfileUpdated]);
+
+  useEffect(() => {
     profileRef.current = profile;
-    setMissionsState(normalizeDailyMissions(profile.dailyMissions, profile.id));
+    if (profile.dailyMissions) {
+      setMissionsState(sanitizeServerDailyMissions(profile.dailyMissions, profile.id));
+    }
     setCredits(profile.stats.credits);
   }, [profile]);
 
@@ -107,19 +117,19 @@ export const DailyMissionsModal: React.FC<DailyMissionsModalProps> = ({
         profileRef.current.dailyMissions?.dayKey !== data.dailyMissions.dayKey ||
         profileRef.current.stats.credits !== data.credits
       ) {
-        onProfileUpdated({
+        onProfileUpdatedRef.current({
           ...profileRef.current,
           dailyMissions: data.dailyMissions,
           stats: { ...profileRef.current.stats, credits: data.credits },
         });
       }
     } catch {
-      // Keep normalized local profile state if momentarily offline.
+      // Keep local profile state if momentarily offline.
     } finally {
       fetchingRef.current = false;
       if (isRollover) setRefreshingRollover(false);
     }
-  }, [onProfileUpdated]);
+  }, []);
 
   useEffect(() => {
     void fetchServerMissions(false);
@@ -163,9 +173,11 @@ export const DailyMissionsModal: React.FC<DailyMissionsModalProps> = ({
     setFeedback(null);
     try {
       const res = await postJson<ClaimApiResponse>('/api/missions/claim', { missionId });
-      setMissionsState(normalizeDailyMissions(res.profile.dailyMissions, res.profile.id));
+      if (res.profile.dailyMissions) {
+        setMissionsState(sanitizeServerDailyMissions(res.profile.dailyMissions, res.profile.id));
+      }
       setCredits(res.profile.stats.credits);
-      onProfileUpdated(res.profile);
+      onProfileUpdatedRef.current(res.profile);
       soundEngine.playHitmarker(true);
       setFeedback({ kind: 'success', text: t.missionsRewardReceived(res.creditsAwarded) });
     } catch (err) {
@@ -184,9 +196,11 @@ export const DailyMissionsModal: React.FC<DailyMissionsModalProps> = ({
     setFeedback(null);
     try {
       const res = await postJson<ClaimApiResponse>('/api/missions/claim-bonus', {});
-      setMissionsState(normalizeDailyMissions(res.profile.dailyMissions, res.profile.id));
+      if (res.profile.dailyMissions) {
+        setMissionsState(sanitizeServerDailyMissions(res.profile.dailyMissions, res.profile.id));
+      }
       setCredits(res.profile.stats.credits);
-      onProfileUpdated(res.profile);
+      onProfileUpdatedRef.current(res.profile);
       soundEngine.playMatchEnd(true);
       setFeedback({ kind: 'success', text: t.missionsRewardReceived(res.creditsAwarded) });
     } catch (err) {

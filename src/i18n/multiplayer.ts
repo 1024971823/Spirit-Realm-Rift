@@ -85,6 +85,7 @@ const ERRORS = {
   unavailable: ['暂时无法执行此操作，请稍后重试。', 'This action is unavailable. Try again shortly.'],
   rate_limited: ['操作过于频繁，请稍候。', 'Too many requests. Wait a moment.'],
   chat_rejected: ['无法发送消息，请检查内容、发送频率或账号状态。', 'Message rejected. Check its content, send rate, or your account status.'],
+  protocol_mismatch: ['客户端版本已过期，请刷新页面后重新连接。', 'Your game client is out of date. Refresh this page to reconnect.'],
 } as const;
 
 export function multiplayerError(lang: 'zh' | 'en', code?: string): string {

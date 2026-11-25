@@ -243,6 +243,25 @@ export function normalizeDailyMissions(
   };
 }
 
+const DAY_KEY_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+
+/**
+ * Validates server-authoritative daily mission state without checking against
+ * the local machine's UTC date, preventing client clock skew from zeroing progress.
+ */
+export function sanitizeServerDailyMissions(
+  raw: Partial<DailyMissionsState> | null | undefined,
+  playerId: string,
+): DailyMissionsState {
+  if (raw && typeof raw.dayKey === 'string' && DAY_KEY_PATTERN.test(raw.dayKey) && Array.isArray(raw.missions) && raw.missions.length > 0) {
+    const baseMs = Date.parse(`${raw.dayKey}T12:00:00Z`);
+    if (Number.isFinite(baseMs)) {
+      return normalizeDailyMissions(raw, playerId, baseMs);
+    }
+  }
+  return normalizeDailyMissions(raw, playerId);
+}
+
 function getContributionDelta(mission: DailyMissionProgress, contribution: DailyMissionContribution): number {
   switch (mission.kind) {
     case 'kills_with_robot': {

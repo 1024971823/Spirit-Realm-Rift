@@ -14,6 +14,12 @@ import type {
   WeaponId,
 } from './types.ts';
 
+export const SNAPSHOT_PROTOCOL_VERSION = 2;
+
+export function negotiateSnapshotProtocol(rawParam: string | null | undefined): 1 | 2 {
+  return rawParam === String(SNAPSHOT_PROTOCOL_VERSION) ? 2 : 1;
+}
+
 function round2(n: number): number {
   return Math.round(n * 100) / 100;
 }

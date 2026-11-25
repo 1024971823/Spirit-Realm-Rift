@@ -14,8 +14,11 @@ import {
   Zap,
 } from 'lucide-react';
 import { soundEngine } from '../audio/soundEngine';
+import { TACTICAL_KEYS, TACTICAL_PINGS } from '../game/tacticalPings';
 import { useI18n } from '../i18n/LanguageContext';
 import { ROBOT_CLASS_I18N } from '../i18n/translations';
+import { AMMO_PACKS, INITIAL_TEAM_CREDITS } from '../shared/catalog';
+import type { TacticalPingKind } from '../shared/social';
 import {
   getNextIncompleteTrainingStep,
   isTrainingComplete,
@@ -24,20 +27,44 @@ import {
   type TrainingProgress,
   type TrainingStepId,
 } from '../shared/training';
-import type { RobotClass } from '../shared/types';
+import type { ControllerConfig, RobotClass } from '../shared/types';
 
 interface TrainingModalProps {
   progress: TrainingProgress;
   activeRobotClass: RobotClass;
+  controller: ControllerConfig;
   onSelectRobotClass: (robotClass: RobotClass) => void;
   onProgressChange: (next: TrainingProgress) => void;
   onGoToLobby: () => void;
   onClose: () => void;
 }
 
+const FULL_MAG_COST = AMMO_PACKS.full_mag.cost;
+const PING_ORDER: TacticalPingKind[] = ['rally', 'danger', 'mine', 'support'];
+
+function extractKeyboardLabel(bindingSpec: string | undefined, fallback: string): string {
+  const first = (bindingSpec || '').split('/')[0]?.trim();
+  return first || fallback;
+}
+
+function matchesBindingKey(e: KeyboardEvent, bindingSpec: string | undefined, fallbackCodes: string[]): boolean {
+  const token = (bindingSpec || '').split('/')[0]?.trim().toLowerCase() ?? '';
+  if (!token || token.startsWith('mouse')) {
+    return fallbackCodes.includes(e.code);
+  }
+  const codeLower = e.code.toLowerCase();
+  const keyLower = e.key.toLowerCase();
+  if (token === 'space') return e.code === 'Space';
+  if (token === 'shift') return e.code === 'ShiftLeft' || e.code === 'ShiftRight';
+  if (token === 'ctrl' || token === 'control') return e.code === 'ControlLeft' || e.code === 'ControlRight';
+  if (token === 'alt') return e.code === 'AltLeft' || e.code === 'AltRight';
+  return codeLower === token || codeLower === `key${token}` || keyLower === token;
+}
+
 export const TrainingModal: React.FC<TrainingModalProps> = ({
   progress,
   activeRobotClass,
+  controller,
   onSelectRobotClass,
   onProgressChange,
   onGoToLobby,
@@ -47,15 +74,38 @@ export const TrainingModal: React.FC<TrainingModalProps> = ({
   const [selectedStep, setSelectedStep] = useState<TrainingStepId>(
     () => getNextIncompleteTrainingStep(progress) ?? 'drive_dash',
   );
-  // Per-drill interactive micro-states
+  // Per-drill interactive micro-states aligned with live catalog economy
   const [movedKeys, setMovedKeys] = useState<string[]>([]);
   const [shotsFired, setShotsFired] = useState(0);
   const [heatPct, setHeatPct] = useState(0);
   const [oreExtracted, setOreExtracted] = useState(0);
   const [allyRepaired, setAllyRepaired] = useState(0);
-  const [simCredits, setSimCredits] = useState(120);
+  const [simCredits, setSimCredits] = useState(INITIAL_TEAM_CREDITS);
   const [simAmmo, setSimAmmo] = useState(6);
-  const [pingSpot, setPingSpot] = useState<{ x: number; y: number } | null>(null);
+  const [pingWheelOpen, setPingWheelOpen] = useState(false);
+  const [pingSpot, setPingSpot] = useState<{ x: number; y: number; kind: TacticalPingKind } | null>(null);
+
+  const dashKeyLabel = extractKeyboardLabel(controller.bindings.dash, 'Shift');
+  const reloadKeyLabel = extractKeyboardLabel(controller.bindings.reload, 'R');
+  const classSkillKeyLabel = extractKeyboardLabel(controller.bindings.classSkill, 'E');
+  const buyAmmoKeyLabel = extractKeyboardLabel(controller.bindings.buyAmmo, 'B');
+
+  const keyHintForStep = (stepId: TrainingStepId): string => {
+    switch (stepId) {
+      case 'drive_dash':
+        return `WASD + ${dashKeyLabel}`;
+      case 'fire_vent':
+        return `LMB + ${reloadKeyLabel}`;
+      case 'switch_chassis':
+        return 'U';
+      case 'mine_repair':
+        return classSkillKeyLabel;
+      case 'team_resupply':
+        return `${buyAmmoKeyLabel} / 2`;
+      case 'tactical_ping':
+        return t.trainingSteps.tactical_ping.keyHint;
+    }
+  };
 
   const completeStep = useCallback(
     (step: TrainingStepId) => {
@@ -70,36 +120,64 @@ export const TrainingModal: React.FC<TrainingModalProps> = ({
     [onProgressChange, progress],
   );
 
-  // Support real keyboard interaction while training modal is open
+  const triggerPing = useCallback(
+    (kind: TacticalPingKind, x = 120, y = 60) => {
+      setPingWheelOpen(false);
+      setPingSpot({ x, y, kind });
+      completeStep('tactical_ping');
+    },
+    [completeStep],
+  );
+
+  // Support real keyboard interaction using the player's actual controller bindings
   useEffect(() => {
     const onKey = (ev: KeyboardEvent) => {
       if ((ev.target as HTMLElement | null)?.closest?.('input,textarea,select')) return;
+      const b = controller.bindings;
       if (selectedStep === 'drive_dash') {
         if (['KeyW', 'KeyA', 'KeyS', 'KeyD'].includes(ev.code)) {
           setMovedKeys(prev => (prev.includes(ev.code) ? prev : [...prev, ev.code]));
-        } else if (ev.code === 'ShiftLeft' || ev.code === 'ShiftRight') {
+        } else if (matchesBindingKey(ev, b.dash, ['ShiftLeft', 'ShiftRight'])) {
           completeStep('drive_dash');
         }
-      } else if (selectedStep === 'fire_vent' && ev.code === 'KeyR' && shotsFired >= 3) {
+      } else if (selectedStep === 'fire_vent' && matchesBindingKey(ev, b.reload, ['KeyR']) && shotsFired >= 3) {
         setHeatPct(0);
         completeStep('fire_vent');
       } else if (selectedStep === 'switch_chassis' && ev.code === 'KeyU') {
         const nextClass: RobotClass = activeRobotClass === 's1_striker' ? 'ep_miner' : 's1_striker';
         onSelectRobotClass(nextClass);
         completeStep('switch_chassis');
-      } else if (selectedStep === 'mine_repair' && ev.code === 'KeyE') {
-        setOreExtracted(90);
-        setAllyRepaired(45);
+      } else if (selectedStep === 'mine_repair' && matchesBindingKey(ev, b.classSkill, ['KeyE'])) {
+        setOreExtracted(prev => prev + 90);
+        setAllyRepaired(prev => prev + 45);
         completeStep('mine_repair');
-      } else if (selectedStep === 'team_resupply' && ev.code === 'KeyB') {
-        setSimCredits(c => Math.max(0, c - 45));
+      } else if (
+        selectedStep === 'team_resupply' &&
+        (matchesBindingKey(ev, b.buyAmmo, ['KeyB']) || ev.code === 'Digit2')
+      ) {
+        setSimCredits(c => Math.max(0, c - FULL_MAG_COST));
         setSimAmmo(30);
         completeStep('team_resupply');
+      } else if (selectedStep === 'tactical_ping') {
+        if (ev.code === 'KeyG' && !ev.repeat) {
+          ev.preventDefault();
+          setPingWheelOpen(true);
+        } else if (pingWheelOpen && TACTICAL_KEYS[ev.code]) {
+          ev.preventDefault();
+          const kind = TACTICAL_KEYS[ev.code]!;
+          const coords: Record<TacticalPingKind, { x: number; y: number }> = {
+            rally: { x: 120, y: 36 },
+            danger: { x: 184, y: 60 },
+            mine: { x: 194, y: 88 },
+            support: { x: 56, y: 60 },
+          };
+          triggerPing(kind, coords[kind].x, coords[kind].y);
+        }
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [activeRobotClass, completeStep, onSelectRobotClass, selectedStep, shotsFired]);
+  }, [activeRobotClass, completeStep, controller.bindings, onSelectRobotClass, pingWheelOpen, selectedStep, shotsFired, triggerPing]);
 
   const doneCount = progress.completedSteps.length;
   const totalCount = TRAINING_STEP_ORDER.length;
@@ -131,7 +209,7 @@ export const TrainingModal: React.FC<TrainingModalProps> = ({
   };
 
   const handleResupply = () => {
-    setSimCredits(prev => Math.max(0, prev - 45));
+    setSimCredits(prev => Math.max(0, prev - FULL_MAG_COST));
     setSimAmmo(30);
     completeStep('team_resupply');
   };
@@ -140,8 +218,7 @@ export const TrainingModal: React.FC<TrainingModalProps> = ({
     const rect = ev.currentTarget.getBoundingClientRect();
     const x = Math.round(((ev.clientX - rect.left) / rect.width) * 240);
     const y = Math.round(((ev.clientY - rect.top) / rect.height) * 120);
-    setPingSpot({ x, y });
-    completeStep('tactical_ping');
+    triggerPing(pingSpot?.kind ?? 'rally', x, y);
   };
 
   const handleReset = () => {
@@ -152,8 +229,9 @@ export const TrainingModal: React.FC<TrainingModalProps> = ({
     setHeatPct(0);
     setOreExtracted(0);
     setAllyRepaired(0);
-    setSimCredits(120);
+    setSimCredits(INITIAL_TEAM_CREDITS);
     setSimAmmo(6);
+    setPingWheelOpen(false);
     setPingSpot(null);
   };
 
@@ -243,7 +321,7 @@ export const TrainingModal: React.FC<TrainingModalProps> = ({
                   }`}
                 >
                   <div className="flex items-center justify-between gap-2 text-[11px] font-mono-tabular">
-                    <span className={active ? 'text-cyan-300' : 'text-slate-400'}>{copy.keyHint}</span>
+                    <span className={active ? 'text-cyan-300' : 'text-slate-400'}>{keyHintForStep(stepId)}</span>
                     {stepDone && (
                       <span className="inline-flex items-center gap-1 text-emerald-400">
                         <CheckCircle2 className="w-3.5 h-3.5" />
@@ -261,7 +339,7 @@ export const TrainingModal: React.FC<TrainingModalProps> = ({
           <section className="chamfer-sm border border-white/10 bg-[#101723] p-5 flex flex-col justify-between gap-4">
             <div>
               <div className="flex items-center justify-between gap-2 text-xs font-mono-tabular uppercase tracking-wider text-cyan-300 mb-2">
-                <span>{stepCopy.keyHint}</span>
+                <span>{keyHintForStep(selectedStep)}</span>
                 <span>
                   {progress.completedSteps.includes(selectedStep)
                     ? t.trainingStepDone
@@ -289,7 +367,7 @@ export const TrainingModal: React.FC<TrainingModalProps> = ({
                       className="chamfer-btn inline-flex items-center gap-2 bg-cyan-500 hover:bg-cyan-400 px-4 py-2.5 text-xs font-display font-bold uppercase tracking-wider text-slate-950 cursor-pointer"
                     >
                       <Zap className="w-4 h-4" />
-                      {t.trainingSteps.drive_dash.btn}
+                      {t.trainingSteps.drive_dash.btn.replace('[Shift]', `[${dashKeyLabel}]`)}
                     </button>
                   </div>
                 )}
@@ -328,7 +406,7 @@ export const TrainingModal: React.FC<TrainingModalProps> = ({
                         onClick={handleVentHeat}
                         className="chamfer-btn inline-flex items-center gap-1.5 bg-amber-500 hover:bg-amber-400 disabled:opacity-45 px-3.5 py-2 text-xs font-display font-bold uppercase tracking-wider text-slate-950 cursor-pointer"
                       >
-                        {t.trainingSteps.fire_vent.ventBtn}
+                        {t.trainingSteps.fire_vent.ventBtn.replace('[R]', `[${reloadKeyLabel}]`)}
                       </button>
                     </div>
                   </div>
@@ -369,7 +447,7 @@ export const TrainingModal: React.FC<TrainingModalProps> = ({
                       className="chamfer-btn inline-flex items-center gap-2 bg-emerald-500 hover:bg-emerald-400 px-4 py-2.5 text-xs font-display font-bold uppercase tracking-wider text-slate-950 cursor-pointer"
                     >
                       <Pickaxe className="w-4 h-4" />
-                      {t.trainingSteps.mine_repair.btn}
+                      {t.trainingSteps.mine_repair.btn.replace('[E]', `[${classSkillKeyLabel}]`)}
                     </button>
                   </div>
                 )}
@@ -389,16 +467,46 @@ export const TrainingModal: React.FC<TrainingModalProps> = ({
                       onClick={handleResupply}
                       className="chamfer-btn inline-flex items-center gap-2 bg-amber-500 hover:bg-amber-400 px-4 py-2.5 text-xs font-display font-bold uppercase tracking-wider text-slate-950 cursor-pointer"
                     >
-                      {t.trainingSteps.team_resupply.btn}
+                      {t.trainingSteps.team_resupply.btn(FULL_MAG_COST, `${buyAmmoKeyLabel} / 2`)}
                     </button>
                   </div>
                 )}
 
                 {selectedStep === 'tactical_ping' && (
-                  <div className="space-y-2.5">
-                    <div className="flex items-center gap-2 text-xs font-mono-tabular text-slate-300">
-                      <Radio className="w-4 h-4 text-cyan-400" />
-                      <span>{t.trainingSteps.tactical_ping.radarHint}</span>
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between gap-2 text-xs font-mono-tabular text-slate-300">
+                      <span className="inline-flex items-center gap-2">
+                        <Radio className="w-4 h-4 text-cyan-400" />
+                        <span>{t.trainingSteps.tactical_ping.radarHint}</span>
+                      </span>
+                      {pingWheelOpen && (
+                        <span className="text-amber-300 font-semibold">[G] ↑→↓←</span>
+                      )}
+                    </div>
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                      {PING_ORDER.map(kind => {
+                        const meta = TACTICAL_PINGS[kind];
+                        const active = pingSpot?.kind === kind;
+                        return (
+                          <button
+                            key={kind}
+                            type="button"
+                            data-testid={`training-ping-${kind}`}
+                            onClick={() => triggerPing(kind)}
+                            className={`chamfer-sm flex items-center justify-between px-2.5 py-2 border text-xs font-mono-tabular cursor-pointer transition-colors ${
+                              active
+                                ? 'bg-[#122636] border-cyan-400 text-white'
+                                : 'bg-[#0D1623] border-white/10 text-slate-300 hover:border-white/30'
+                            }`}
+                          >
+                            <span className="inline-flex items-center gap-1.5">
+                              <span style={{ color: meta.color }}>{meta.symbol}</span>
+                              <span>{meta[lang]}</span>
+                            </span>
+                            <span className="text-slate-400">{meta.arrow}</span>
+                          </button>
+                        );
+                      })}
                     </div>
                     <svg
                       viewBox="0 0 240 120"
@@ -410,8 +518,7 @@ export const TrainingModal: React.FC<TrainingModalProps> = ({
                       onKeyDown={ev => {
                         if (ev.key === 'Enter' || ev.key === ' ') {
                           ev.preventDefault();
-                          setPingSpot({ x: 120, y: 60 });
-                          completeStep('tactical_ping');
+                          triggerPing('rally', 120, 60);
                         }
                       }}
                       className="w-full max-w-sm h-28 rounded border border-cyan-400/35 bg-[#071019] cursor-crosshair"
@@ -423,8 +530,20 @@ export const TrainingModal: React.FC<TrainingModalProps> = ({
                       <rect x="194" y="84" width="12" height="12" fill="#10B981" fillOpacity="0.6" />
                       {pingSpot && (
                         <g>
-                          <circle cx={pingSpot.x} cy={pingSpot.y} r="10" fill="none" stroke="#38BDF8" strokeWidth="2" />
-                          <circle cx={pingSpot.x} cy={pingSpot.y} r="3.5" fill="#F59E0B" />
+                          <circle
+                            cx={pingSpot.x}
+                            cy={pingSpot.y}
+                            r="10"
+                            fill="none"
+                            stroke={TACTICAL_PINGS[pingSpot.kind].color}
+                            strokeWidth="2"
+                          />
+                          <circle
+                            cx={pingSpot.x}
+                            cy={pingSpot.y}
+                            r="3.5"
+                            fill={TACTICAL_PINGS[pingSpot.kind].color}
+                          />
                         </g>
                       )}
                     </svg>

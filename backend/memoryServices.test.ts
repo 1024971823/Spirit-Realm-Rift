@@ -113,6 +113,52 @@ test('standalone in-memory services handle guest login, block guest password imp
   assert.equal(((await matchRes.json()) as { status: string }).status, 'finished');
 });
 
+test('memory trial mode never grants moderator privileges to unverified self-registered accounts', async t => {
+  const prevOrigin = process.env.ORIGIN;
+  const prevKey = process.env.PLAYTEST_KEY;
+  const prevMods = process.env.MODERATOR_EMAILS;
+  delete process.env.ORIGIN;
+  delete process.env.PLAYTEST_KEY;
+  process.env.MODERATOR_EMAILS = 'admin@example.com';
+  t.after(() => {
+    if (prevOrigin !== undefined) process.env.ORIGIN = prevOrigin;
+    else delete process.env.ORIGIN;
+    if (prevKey !== undefined) process.env.PLAYTEST_KEY = prevKey;
+    else delete process.env.PLAYTEST_KEY;
+    if (prevMods !== undefined) process.env.MODERATOR_EMAILS = prevMods;
+    else delete process.env.MODERATOR_EMAILS;
+  });
+
+  const services = await makeMemoryServices();
+  t.after(() => services.close());
+
+  const app = express();
+  app.use(express.json());
+  services.install(app);
+  const server = app.listen(0, '127.0.0.1');
+  await new Promise<void>(resolve => server.once('listening', resolve));
+  t.after(() => server.close());
+  const port = (server.address() as { port: number }).port;
+  const origin = `http://127.0.0.1:${port}`;
+
+  const regRes = await fetch(`${origin}/api/auth/register`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Origin: origin },
+    body: JSON.stringify({ email: 'admin@example.com', password: 'StrongPassword123!', callsign: 'FakeAdmin' }),
+  });
+  assert.equal(regRes.status, 200);
+  const regCookie = regRes.headers.get('set-cookie')?.split(';')[0] ?? '';
+  const regBody = (await regRes.json()) as { moderator: boolean };
+  assert.equal(regBody.moderator, false);
+
+  const sessionRes = await fetch(`${origin}/api/auth/session`, { headers: { Cookie: regCookie } });
+  assert.equal(sessionRes.status, 200);
+  assert.equal(((await sessionRes.json()) as { moderator: boolean }).moderator, false);
+
+  const modRes = await fetch(`${origin}/api/moderation/reports`, { headers: { Cookie: regCookie } });
+  assert.equal(modRes.status, 403);
+});
+
 test('makeServices blocks silent memory fallback in production unless ALLOW_MEMORY_MODE=1 (and never when PUBLIC_ACCESS=1)', async t => {
   const saved = {
     NODE_ENV: process.env.NODE_ENV,
@@ -276,4 +322,119 @@ test('daily missions progress via match settlement, handle concurrent claims saf
   assert.deepEqual(bonusStatuses, [200, 409]);
   assert.equal((await services.getProfile(playerId)).stats.credits, expectedCredits + 200);
 });
+
+test('guest quick-play accepts X-Forwarded-Host behind trusted reverse proxy, sets iframe-safe HTTPS cookies, and rejects spoofed proxy headers when untrusted', async t => {
+  const prevOrigin = process.env.ORIGIN;
+  const prevKService = process.env.K_SERVICE;
+  const prevTrustProxy = process.env.TRUST_PROXY;
+  delete process.env.ORIGIN;
+  delete process.env.K_SERVICE;
+  delete process.env.TRUST_PROXY;
+  t.after(() => {
+    if (prevOrigin !== undefined) process.env.ORIGIN = prevOrigin;
+    else delete process.env.ORIGIN;
+    if (prevKService !== undefined) process.env.K_SERVICE = prevKService;
+    else delete process.env.K_SERVICE;
+    if (prevTrustProxy !== undefined) process.env.TRUST_PROXY = prevTrustProxy;
+    else delete process.env.TRUST_PROXY;
+  });
+
+  // Untrusted direct server must reject spoofed X-Forwarded-Host
+  const directServices = await makeMemoryServices();
+  t.after(() => directServices.close());
+  assert.equal(
+    directServices.allowOrigin({
+      headers: {
+        host: 'localhost:3000',
+        'x-forwarded-host': 'ais-dev-example.us-west2.run.app',
+        origin: 'https://ais-dev-example.us-west2.run.app',
+      },
+    } as unknown as IncomingMessage),
+    false,
+  );
+
+  // Trusted Cloud Run / AI Studio proxy accepts X-Forwarded-Host when nginx overrides Host to localhost:3000
+  process.env.K_SERVICE = 'ais-dev-example';
+  const proxyServices = await makeMemoryServices();
+  t.after(() => proxyServices.close());
+
+  const app = express();
+  app.use(express.json());
+  proxyServices.install(app);
+  const server = app.listen(0, '127.0.0.1');
+  await new Promise<void>(resolve => server.once('listening', resolve));
+  t.after(() => server.close());
+  const port = (server.address() as { port: number }).port;
+  const proxyHost = 'ais-dev-example.us-west2.run.app';
+  const proxyOrigin = `https://${proxyHost}`;
+
+  // Valid proxied guest sign-in succeeds even when nginx rewrites Host and X-Forwarded-Proto=http
+  const okRes = await fetch(`http://127.0.0.1:${port}/api/auth/guest`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Origin: proxyOrigin,
+      'X-Forwarded-Host': proxyHost,
+      'X-Forwarded-Proto': 'http',
+    },
+    body: JSON.stringify({}),
+  });
+  assert.equal(okRes.status, 200);
+  const setCookie = okRes.headers.get('set-cookie') ?? '';
+  assert.ok(setCookie.includes('SameSite=None'), `Expected SameSite=None cookie for HTTPS iframe, got: ${setCookie}`);
+  assert.ok(setCookie.includes('Secure'), `Expected Secure cookie for HTTPS iframe, got: ${setCookie}`);
+  assert.ok(setCookie.includes('Partitioned'), `Expected Partitioned cookie for HTTPS iframe, got: ${setCookie}`);
+
+  // Cross-origin attacker is still blocked with 403
+  const evilRes = await fetch(`http://127.0.0.1:${port}/api/auth/guest`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Origin: 'https://evil.example',
+      'X-Forwarded-Host': proxyHost,
+    },
+    body: JSON.stringify({}),
+  });
+  assert.equal(evilRes.status, 403);
+
+  // Cookie-less cross-site iframe fallback: authenticate HTTP and WS subprotocol purely via sessionToken
+  const guestPayload = (await okRes.json()) as {
+    playerId: string;
+    profile?: { id: string; callsign: string };
+    sessionToken?: string;
+  };
+  assert.equal(guestPayload.profile?.id, guestPayload.playerId);
+  assert.ok(guestPayload.sessionToken && guestPayload.sessionToken.length === 43);
+
+  const bearerSessionRes = await fetch(`http://127.0.0.1:${port}/api/auth/session`, {
+    headers: { Authorization: `Bearer ${guestPayload.sessionToken}` },
+  });
+  assert.equal(bearerSessionRes.status, 200);
+  const bearerSession = (await bearerSessionRes.json()) as { playerId: string; profile?: { id: string } };
+  assert.equal(bearerSession.playerId, guestPayload.playerId);
+  assert.equal(bearerSession.profile?.id, guestPayload.playerId);
+
+  const wsAuth = await proxyServices.authenticate({
+    headers: {
+      'sec-websocket-protocol': `prism.v2, prism.auth.${guestPayload.sessionToken}`,
+    },
+  } as unknown as IncomingMessage);
+  assert.equal(wsAuth?.playerId, guestPayload.playerId);
+
+  // Logout revokes the token even when sent without cookies
+  const logoutRes = await fetch(`http://127.0.0.1:${port}/api/auth/logout`, {
+    method: 'POST',
+    headers: {
+      Origin: proxyOrigin,
+      'X-Forwarded-Host': proxyHost,
+      Authorization: `Bearer ${guestPayload.sessionToken}`,
+    },
+  });
+  assert.equal(logoutRes.status, 200);
+  const afterLogout = await proxyServices.authenticate({
+    headers: { Authorization: `Bearer ${guestPayload.sessionToken}` },
+  } as unknown as IncomingMessage);
+  assert.equal(afterLogout, null);
+});
+
 
