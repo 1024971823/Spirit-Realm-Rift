@@ -35,6 +35,12 @@ import {
   evaluateMatchOutcome,
 } from './src/shared/matchmaking.ts';
 import {
+  evaluateDailyMissionEligibility,
+} from './src/shared/dailyMissions.ts';
+import {
+  encodeCompactMatchSnapshot,
+} from './src/shared/snapshotCodec.ts';
+import {
   computeObstacleAvoidanceDir,
   evaluateHazardState,
   extractOreFromNode,
@@ -129,6 +135,9 @@ interface ServerCombatant extends CombatantSnapshot {
   barriersDestroyedMatch: number;
   killsByRobot: Record<RobotClass, number>;
   oreMinedByRobot: Record<RobotClass, number>;
+  allyRepairMatch: number;
+  coreControlSecMatch: number;
+  pingsSentMatch: number;
   shieldActiveUntil: number;
   overclockUntil: number;
   oreFracBuffer: number;
@@ -169,6 +178,7 @@ interface ServerRoom {
   oreNodes: Map<string, OreNodeState>;
   hazards: HazardRuntimeState[];
   killFeed: KillFeedEvent[];
+  lastBroadcastKillId?: string;
   antiCheat: AntiCheatAudit;
   matchFinalized: boolean;
 
@@ -462,6 +472,9 @@ function ensureRoomBots(room: ServerRoom): void {
         barriersDestroyedMatch: 0,
         killsByRobot: { s1_striker: 0, ep_miner: 0 },
         oreMinedByRobot: { s1_striker: 0, ep_miner: 0 },
+        allyRepairMatch: 0,
+        coreControlSecMatch: 0,
+        pingsSentMatch: 0,
         shieldActiveUntil: 0,
         overclockUntil: 0,
         oreFracBuffer: 0,
@@ -1026,6 +1039,7 @@ function stepRoom(room: ServerRoom, now: number): void {
       if (room.config.mode === 'control_core' && room.phase === 'active') {
         const distCore = Math.hypot(p.x - map.controlCore.x, p.z - map.controlCore.z);
         if (distCore <= 6.2) {
+          p.coreControlSecMatch += dt;
           if (p.team === 'cobalt') cobaltOnCore++;
           else amberOnCore++;
         }
@@ -1051,8 +1065,19 @@ function stepRoom(room: ServerRoom, now: number): void {
       }
     }
 
-    // Broadcast authoritative snapshot to connected human clients
-    if (room.phase === 'active') broadcastToRoom(room, 'match:state', serializeRoomSnapshot(room));
+    // Broadcast compact authoritative snapshot to connected human clients (rehydrated client-side)
+    if (room.phase === 'active') {
+      const fullSnap = serializeRoomSnapshot(room);
+      const latestKillId = fullSnap.killFeed.at(-1)?.id;
+      const includeKillFeed = latestKillId !== room.lastBroadcastKillId;
+      if (includeKillFeed) room.lastBroadcastKillId = latestKillId;
+      const compactSnap = encodeCompactMatchSnapshot(fullSnap, {
+        includeRosterMeta: room.serverTick <= 2 || room.serverTick % 40 === 0,
+        includeKillFeed,
+        includeAntiCheat: room.serverTick <= 2 || room.serverTick % 20 === 0,
+      });
+      broadcastToRoom(room, 'match:state', compactSnap);
+    }
 }
 
 function createCombatant(room: ServerRoom, member: Member): ServerCombatant {
@@ -1113,6 +1138,9 @@ function createCombatant(room: ServerRoom, member: Member): ServerCombatant {
     barriersDestroyedMatch: 0,
     killsByRobot: { s1_striker: 0, ep_miner: 0 },
     oreMinedByRobot: { s1_striker: 0, ep_miner: 0 },
+    allyRepairMatch: 0,
+    coreControlSecMatch: 0,
+    pingsSentMatch: 0,
     shieldActiveUntil: 0,
     overclockUntil: 0,
     oreFracBuffer: 0,
@@ -1198,6 +1226,7 @@ function gameplay(room: ServerRoom, playerId: string, type: string, payload: Rec
         distance = Math.max(0, distance);
         position = { x: origin.x + dir.x * distance, y: Math.max(0, origin.y + dir.y * distance), z: origin.z + dir.z * distance };
       }
+      p.pingsSentMatch += 1;
       p.lastPingAt = now;
       emitGame({ type: 'ping', matchId: room.matchId, ping: {
         id: randomUUID(), matchId: room.matchId, playerId, callsign: p.callsign,
@@ -1325,8 +1354,13 @@ function gameplay(room: ServerRoom, playerId: string, type: string, payload: Rec
           if (!mate.alive || mate.team !== p.team) continue;
           const d = Math.hypot(mate.x - p.x, mate.z - p.z);
           if (d <= 12) {
+            const beforeShield = mate.shield;
+            const beforeHp = mate.hp;
             mate.shield = Math.min(mate.maxShield, mate.shield + 35);
             mate.hp = Math.min(mate.maxHp, mate.hp + 20);
+            if (mate.id !== p.id) {
+              p.allyRepairMatch += (mate.shield - beforeShield) + (mate.hp - beforeHp);
+            }
           }
         }
       }
@@ -1853,6 +1887,10 @@ async function settleMatch(room: ServerRoom, worker: GameWorker, adjudication?: 
   })));
   const winningTeam = adjudication === 'cobalt' || adjudication === 'amber' ? adjudication : outcome.winningTeam;
   const draw = !adjudication && room.config.mode !== 'ffa' && Math.floor(room.scoreCobalt) === Math.floor(room.scoreAmber);
+  const elapsedSec = Math.max(0, (Date.now() - room.startedAtMs) / 1000);
+  const reachedScoreLimit =
+    room.scoreCobalt >= room.scoreLimit || room.scoreAmber >= room.scoreLimit || elapsedSec >= room.durationSec;
+  const missionPolicy = services.missionEligibilityPolicy;
   const results: Result[] = [];
   for (const member of room.members.values()) {
     const p = room.players.get(member.id);
@@ -1860,7 +1898,20 @@ async function settleMatch(room: ServerRoom, worker: GameWorker, adjudication?: 
     const won = !draw && !member.forfeited && (room.config.mode === 'ffa' ? outcome.winnerId === p.id : p.team === winningTeam);
     const result = adjudication === 'cancelled' ? 'cancelled' : member.forfeited ? 'forfeit' : draw ? 'draw' : won ? 'win' : 'loss';
     const progressEnabled = room.publicMatch && adjudication !== 'cancelled' && !member.forfeited;
-    const missionsEnabled = adjudication !== 'cancelled' && !member.forfeited;
+    const eligibility = evaluateDailyMissionEligibility({
+      isPublicMatch: room.publicMatch,
+      cancelled: adjudication === 'cancelled',
+      forfeited: Boolean(member.forfeited),
+      elapsedSec,
+      reachedScoreLimit,
+      damageDealt: Math.round(p.damageDealt),
+      oreMined: Math.round(p.oreMined),
+      barriersDestroyed: p.barriersDestroyedMatch,
+      allyRepair: Math.round(p.allyRepairMatch),
+      coreControlSec: Math.round(p.coreControlSecMatch),
+      kills: p.kills,
+      policy: missionPolicy,
+    });
     const xpEarned = progressEnabled ? 80 + p.kills * 18 + (won ? 65 : 20) : 0;
     results.push({ playerId: member.id, summary: {
       matchId, result, ranked: false, isPrivate: room.config.isPrivate, draw: result === 'draw', cancelled: result === 'cancelled', won: result === 'win', mode: room.config.mode,
@@ -1869,19 +1920,29 @@ async function settleMatch(room: ServerRoom, worker: GameWorker, adjudication?: 
       accuracy: p.shotsFiredMatch ? Math.round(p.shotsHitMatch * 100 / p.shotsFiredMatch) : 0,
       mmrDelta: 0, newMmr: member.profile.stats.mmr, xpEarned, newXp: member.profile.stats.xp,
       scoreCobalt: Math.round(room.scoreCobalt), scoreAmber: Math.round(room.scoreAmber),
+      robotClass: p.robotClass,
+      damageDealt: Math.round(p.damageDealt),
+      oreMined: Math.round(p.oreMined),
+      allyRepair: Math.round(p.allyRepairMatch),
+      coreControlSec: Math.round(p.coreControlSecMatch),
+      barriersDestroyed: p.barriersDestroyedMatch,
+      pingsSent: p.pingsSentMatch,
+      missionEligible: eligibility.eligible,
+      ...(eligibility.eligible ? {} : { missionIneligibleReason: eligibility.reason }),
     }, ...(progressEnabled ? { progress: {
       mapId: room.config.mapId, mode: room.config.mode, won, draw,
       kills: p.kills, deaths: p.deaths, assists: p.assists,
       shotsFired: p.shotsFiredMatch, shotsHit: p.shotsHitMatch, damageDealt: p.damageDealt,
       hazardKills: p.hazardKillsMatch, barriersDestroyed: p.barriersDestroyedMatch,
       weaponId: p.weaponId, xpEarned,
-    } } : {}), ...(missionsEnabled ? { missionContribution: {
+    } } : {}), ...(eligibility.eligible ? { missionContribution: {
       won,
       matchesCompleted: 1,
       damageDealt: Math.round(p.damageDealt),
       barriersDestroyed: p.barriersDestroyedMatch,
       killsByRobot: { ...p.killsByRobot },
       oreMinedByRobot: { ...p.oreMinedByRobot },
+      allyRepair: Math.round(p.allyRepairMatch),
     } } : {}) });
   }
   const commit = async (attempt: number): Promise<void> => {

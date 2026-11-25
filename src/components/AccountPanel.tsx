@@ -34,12 +34,17 @@ export function AccountPanel({ onSignIn, inviteCode, onDismissInvite }: {
   const [message, setMessage] = useState('');
   const [pending, setPending] = useState(false);
   const [standalone, setStandalone] = useState(false);
+  const [ephemeral, setEphemeral] = useState(false);
   const labels = { login: t.signIn, register: t.register, forgot: t.forgot, resend: t.resend, verify: t.verify, reset: t.reset };
 
   useEffect(() => {
     let active = true;
-    void requestJson<{ standalone?: boolean }>('/api/auth/mode')
-      .then(res => { if (active && res.standalone) setStandalone(true); })
+    void requestJson<{ standalone?: boolean; ephemeral?: boolean }>('/api/auth/mode')
+      .then(res => {
+        if (!active) return;
+        if (res.standalone) setStandalone(true);
+        if (res.ephemeral) setEphemeral(true);
+      })
       .catch(() => {});
     return () => { active = false; };
   }, []);
@@ -94,6 +99,11 @@ export function AccountPanel({ onSignIn, inviteCode, onDismissInvite }: {
         </div>
         <h1 id="account-title" className="font-display text-2xl font-bold text-white">{labels[mode]}</h1>
         <p className="mt-2 text-sm text-slate-400">{mode === 'verify' ? t.verifyInstruction : t.accountIntro}</p>
+        {ephemeral && (
+          <p role="note" data-testid="ephemeral-demo-notice" className="mt-3 rounded border border-amber-400/30 bg-amber-500/8 px-3 py-2 text-xs text-amber-200 leading-relaxed">
+            {t.ephemeralDemoNotice}
+          </p>
+        )}
         {inviteCode && <section aria-label={LOBBY_TEXT[lang].invitePreview} className="mt-4 space-y-1 rounded border border-cyan-400/25 bg-cyan-500/5 p-3 text-sm">
           <p className="font-semibold">{LOBBY_TEXT[lang].invitePreview} · <code className="break-all text-cyan-300">{inviteCode}</code></p>
           <p className="text-slate-300">{LOBBY_TEXT[lang].inviteLogin}</p>

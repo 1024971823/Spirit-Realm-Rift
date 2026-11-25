@@ -1,5 +1,5 @@
 import React from 'react';
-import { Cpu, Crosshair, Pickaxe, Shield, Sliders, Target, Trophy } from 'lucide-react';
+import { Cpu, Crosshair, GraduationCap, Pickaxe, Shield, Sliders, Target, Trophy } from 'lucide-react';
 import { useI18n } from '../i18n/LanguageContext';
 import { ROBOT_CLASS_I18N, translateXpRank } from '../i18n/translations';
 import { getXpRank, ROBOT_CLASSES } from '../shared/catalog';
@@ -13,10 +13,12 @@ interface TitleOverlayProps {
   pingMs: number;
   inviteCount?: number;
   claimableMissionsCount?: number;
+  trainingCompleted?: boolean;
   onSelectRobotClass: (robotClass: RobotClass) => void;
   onStartMatch: () => void;
   onOpenLoadout: () => void;
   onOpenMissions: () => void;
+  onOpenTraining: () => void;
   onSignOut: () => void;
   onOpenModeration?: () => void;
   onOpenStats: () => void;
@@ -29,10 +31,12 @@ export const TitleOverlay: React.FC<TitleOverlayProps> = ({
   pingMs,
   inviteCount = 0,
   claimableMissionsCount = 0,
+  trainingCompleted = false,
   onSelectRobotClass,
   onStartMatch,
   onOpenLoadout,
   onOpenMissions,
+  onOpenTraining,
   onSignOut,
   onOpenModeration,
   onOpenStats,
@@ -231,6 +235,22 @@ export const TitleOverlay: React.FC<TitleOverlayProps> = ({
             >
               <Sliders className="w-4 h-4 text-slate-300 shrink-0" />
               <span>{t.controlsPad}</span>
+            </button>
+            <button
+              type="button"
+              data-training="true"
+              onClick={onOpenTraining}
+              className="chamfer-sm col-span-2 flex items-center justify-between gap-2.5 px-4 py-2.5 bg-[#101B27] hover:bg-[#17283A] border border-cyan-400/25 text-slate-100 text-sm font-medium transition-colors cursor-pointer whitespace-nowrap"
+            >
+              <span className="flex items-center gap-2.5">
+                <GraduationCap className="w-4 h-4 text-cyan-400 shrink-0" />
+                <span>{t.trainingBtn}</span>
+              </span>
+              {trainingCompleted && (
+                <span className="font-mono-tabular text-[11px] text-emerald-400">
+                  {t.trainingCompletedShort}
+                </span>
+              )}
             </button>
             {onOpenModeration && <button type="button" onClick={onOpenModeration} className="chamfer-sm col-span-2 px-4 py-2.5 bg-[#121926] border border-white/10 text-left text-sm text-amber-300">{multiplayer.moderation}</button>}
           </div>

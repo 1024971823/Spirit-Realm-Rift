@@ -53,11 +53,15 @@ export async function makeServices(onRevoked: (id: string, by: 'session' | 'acco
   const { DATABASE_URL, REDIS_URL, SMTP_URL, SMTP_FROM, ORIGIN, PUBLIC_ACCESS, ELIGIBILITY_URL, ELIGIBILITY_TOKEN, PLAYTEST_KEY } = process.env;
   const prod = process.env.NODE_ENV === 'production';
   const publicAccess = PUBLIC_ACCESS === '1';
+  const allowMemoryMode = process.env.ALLOW_MEMORY_MODE === '1';
   const devMail = process.env.TEST_MAILBOX === '1';
   const localHttp = process.env.LOCAL_HTTP === '1' && !publicAccess;
   if (!DATABASE_URL || !REDIS_URL) {
     if (publicAccess) throw new Error('DATABASE_URL and REDIS_URL are required');
-    console.log('Starting in standalone in-memory mode (DATABASE_URL / REDIS_URL not configured).');
+    if (prod && !allowMemoryMode) {
+      throw new Error('DATABASE_URL and REDIS_URL are required in production; set ALLOW_MEMORY_MODE=1 explicitly for ephemeral demo mode');
+    }
+    console.warn('Starting in ephemeral in-memory demo mode (accounts and mission progress are not persisted across restarts).');
     return makeMemoryServices(onRevoked);
   }
   if (prod && !ORIGIN) throw new Error('Production requires an explicit ORIGIN');
@@ -356,7 +360,7 @@ export async function makeServices(onRevoked: (id: string, by: 'session' | 'acco
   }
   function install(app: Express) {
     app.use('/api', (_req, res, next) => { res.setHeader('Cache-Control', 'no-store'); next(); }, originGuard);
-    app.get('/api/auth/mode', (_req, res) => res.json({ standalone: false }));
+    app.get('/api/auth/mode', (_req, res) => res.json({ standalone: false, ephemeral: false }));
     app.get('/api/auth/session', authorized(async (_req, res, { playerId, email }) => res.json({ playerId, email, moderator: admins.has(email) })));
     app.post('/api/auth/register', wrap(async (req,res) => {
       if (!publicAccess && PLAYTEST_KEY && !keyMatches(req) && req.body?.playtestKey !== PLAYTEST_KEY) return fail(res, 403, '需要封闭测试访问码');
@@ -467,9 +471,16 @@ export async function makeServices(onRevoked: (id: string, by: 'session' | 'acco
     }));
     app.get('/api/profile', authorized(async (_req,res,{playerId}) => res.json(await getProfile(playerId))));
     app.get('/api/missions', authorized(async (_req, res, { playerId }) => {
+      const nowMs = Date.now();
       const profile = await getProfile(playerId);
-      const dailyMissions = normalizeDailyMissions(profile.dailyMissions, playerId);
-      return res.json({ dailyMissions, credits: profile.stats.credits, nextResetMs: msUntilNextUtcDay() });
+      const dailyMissions = normalizeDailyMissions(profile.dailyMissions, playerId, nowMs);
+      return res.json({
+        dailyMissions,
+        credits: profile.stats.credits,
+        nextResetMs: msUntilNextUtcDay(nowMs),
+        serverTimeMs: nowMs,
+        eligibilityPolicy: missionEligibilityPolicy,
+      });
     }));
     app.post('/api/missions/claim', authorized(async (req, res, { playerId }) => {
       const missionId = req.body?.missionId;
@@ -594,5 +605,9 @@ export async function makeServices(onRevoked: (id: string, by: 'session' | 'acco
   const health = async () => { await Promise.all([redis.ping(),pool.query('SELECT 1')]); };
   const close = async () => { await Promise.allSettled([redis.close(),pool.end()]); };
   const isDraining = async () => process.env.DRAIN_MATCHES === '1' || await redis.exists(key('drain')) > 0;
-  return { install, authenticate, allowOrigin, getProfile, saveProfile, getResult, allowPlay, playUntil, lobby, limit, renewOwner, revokeOwner, openMatch, commitResults, cancelMatch, reap, chat, social, health, close, isDraining };
+  const missionEligibilityPolicy = {
+    publicOnly: process.env.ALLOW_PRIVATE_MISSION_PROGRESS !== '1',
+    minMatchSec: 45,
+  };
+  return { standalone: false, missionEligibilityPolicy, install, authenticate, allowOrigin, getProfile, saveProfile, getResult, allowPlay, playUntil, lobby, limit, renewOwner, revokeOwner, openMatch, commitResults, cancelMatch, reap, chat, social, health, close, isDraining };
 }

@@ -1,15 +1,22 @@
-import React, { useEffect, useState } from 'react';
-import { Award, CheckCircle2, Clock, Coins, Crosshair, Flame, Pickaxe, Shield, Target, Trophy, X } from 'lucide-react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { Award, CheckCircle2, Clock, Coins, Crosshair, Flame, HeartHandshake, Pickaxe, Shield, Target, Trophy, X } from 'lucide-react';
 import { soundEngine } from '../audio/soundEngine';
 import { useI18n } from '../i18n/LanguageContext';
 import { formatDailyMissionCopy } from '../i18n/translations';
 import { postJson, requestJson } from '../net/account';
 import {
+  computeServerResetDeadline,
   DAILY_MISSION_ALL_CLEAR_BONUS,
   msUntilNextUtcDay,
   normalizeDailyMissions,
+  shouldRefreshDailyMissions,
 } from '../shared/dailyMissions';
-import type { DailyMissionObjectiveKind, DailyMissionsState, PlayerProfile } from '../shared/types';
+import type {
+  DailyMissionEligibilityPolicy,
+  DailyMissionObjectiveKind,
+  DailyMissionsState,
+  PlayerProfile,
+} from '../shared/types';
 
 interface DailyMissionsModalProps {
   profile: PlayerProfile;
@@ -21,6 +28,8 @@ interface MissionsApiResponse {
   dailyMissions: DailyMissionsState;
   credits: number;
   nextResetMs: number;
+  serverTimeMs?: number;
+  eligibilityPolicy?: DailyMissionEligibilityPolicy;
 }
 
 interface ClaimApiResponse {
@@ -51,6 +60,8 @@ function MissionIcon({ kind, className }: { kind: DailyMissionObjectiveKind; cla
       return <Flame className={className} />;
     case 'destroy_barriers':
       return <Shield className={className} />;
+    case 'ally_repair':
+      return <HeartHandshake className={className} />;
   }
 }
 
@@ -64,38 +75,82 @@ export const DailyMissionsModal: React.FC<DailyMissionsModalProps> = ({
     normalizeDailyMissions(profile.dailyMissions, profile.id),
   );
   const [credits, setCredits] = useState<number>(profile.stats.credits);
+  const [policy, setPolicy] = useState<DailyMissionEligibilityPolicy | null>(null);
+  const [refreshingRollover, setRefreshingRollover] = useState(false);
+  const resetDeadlineRef = useRef<number>(computeServerResetDeadline(msUntilNextUtcDay(), Date.now()));
+  const fetchingRef = useRef(false);
+  const profileRef = useRef(profile);
   const [remainingMs, setRemainingMs] = useState<number>(() => msUntilNextUtcDay());
   const [claimingId, setClaimingId] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<{ kind: 'success' | 'error'; text: string } | null>(null);
 
   useEffect(() => {
+    profileRef.current = profile;
     setMissionsState(normalizeDailyMissions(profile.dailyMissions, profile.id));
     setCredits(profile.stats.credits);
   }, [profile]);
 
-  useEffect(() => {
-    let active = true;
-    void requestJson<MissionsApiResponse>('/api/missions')
-      .then(data => {
-        if (!active) return;
-        setMissionsState(data.dailyMissions);
-        setCredits(data.credits);
-        setRemainingMs(data.nextResetMs);
-      })
-      .catch(() => {
-        // Keep normalized local profile state if momentarily offline.
-      });
-    return () => {
-      active = false;
-    };
-  }, []);
+  const fetchServerMissions = useCallback(async (isRollover = false) => {
+    if (fetchingRef.current) return;
+    fetchingRef.current = true;
+    if (isRollover) setRefreshingRollover(true);
+    try {
+      const data = await requestJson<MissionsApiResponse>('/api/missions');
+      const now = Date.now();
+      const deadline = computeServerResetDeadline(data.nextResetMs, now);
+      resetDeadlineRef.current = deadline;
+      setMissionsState(data.dailyMissions);
+      setCredits(data.credits);
+      setRemainingMs(Math.max(0, deadline - now));
+      if (data.eligibilityPolicy) setPolicy(data.eligibilityPolicy);
+      if (
+        profileRef.current.dailyMissions?.dayKey !== data.dailyMissions.dayKey ||
+        profileRef.current.stats.credits !== data.credits
+      ) {
+        onProfileUpdated({
+          ...profileRef.current,
+          dailyMissions: data.dailyMissions,
+          stats: { ...profileRef.current.stats, credits: data.credits },
+        });
+      }
+    } catch {
+      // Keep normalized local profile state if momentarily offline.
+    } finally {
+      fetchingRef.current = false;
+      if (isRollover) setRefreshingRollover(false);
+    }
+  }, [onProfileUpdated]);
 
   useEffect(() => {
-    const timer = window.setInterval(() => {
-      setRemainingMs(msUntilNextUtcDay());
-    }, 1000);
-    return () => window.clearInterval(timer);
-  }, []);
+    void fetchServerMissions(false);
+  }, [fetchServerMissions]);
+
+  useEffect(() => {
+    const tick = () => {
+      const now = Date.now();
+      const left = Math.max(0, resetDeadlineRef.current - now);
+      setRemainingMs(left);
+      if (shouldRefreshDailyMissions(resetDeadlineRef.current, now)) {
+        // Delay next auto-retry slightly in case the request fails transiently.
+        resetDeadlineRef.current = now + 5_000;
+        void fetchServerMissions(true);
+      }
+    };
+    const timer = window.setInterval(tick, 1000);
+    const onFocusOrVisible = () => {
+      if (document.visibilityState === 'hidden') return;
+      if (shouldRefreshDailyMissions(resetDeadlineRef.current, Date.now())) {
+        void fetchServerMissions(true);
+      }
+    };
+    window.addEventListener('focus', onFocusOrVisible);
+    document.addEventListener('visibilitychange', onFocusOrVisible);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener('focus', onFocusOrVisible);
+      document.removeEventListener('visibilitychange', onFocusOrVisible);
+    };
+  }, [fetchServerMissions]);
 
   const completedCount = missionsState.missions.filter(m => m.progress >= m.target).length;
   const totalCount = missionsState.missions.length;
@@ -167,7 +222,7 @@ export const DailyMissionsModal: React.FC<DailyMissionsModalProps> = ({
               <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 mt-2 text-xs font-mono-tabular text-slate-300">
                 <span className="inline-flex items-center gap-1 text-cyan-300">
                   <Clock className="w-3.5 h-3.5" />
-                  {t.missionsResetIn(formatCountdown(remainingMs))}
+                  {refreshingRollover ? t.missionsRefreshing : t.missionsResetIn(formatCountdown(remainingMs))}
                 </span>
                 <span aria-hidden="true" className="text-slate-600">·</span>
                 <span className="text-slate-400">{missionsState.dayKey}</span>
@@ -177,6 +232,13 @@ export const DailyMissionsModal: React.FC<DailyMissionsModalProps> = ({
                   {t.missionsBalanceLabel}: {credits} {t.creditsSuffix}
                 </span>
               </div>
+              {policy && (
+                <p data-testid="mission-eligibility-policy" className="mt-1.5 text-[11px] font-mono-tabular text-slate-400">
+                  {policy.publicOnly
+                    ? t.missionsPolicyPublicOnly(policy.minMatchSec)
+                    : t.missionsPolicyDemo(policy.minMatchSec)}
+                </p>
+              )}
             </div>
           </div>
 

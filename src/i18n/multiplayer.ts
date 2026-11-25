@@ -22,6 +22,9 @@ export const MULTIPLAYER_TEXT = {
     cancelled: '对局已取消', cancelledResult: '本局不记录战绩或发放经验。', moderation: '举报管理', draw: '平局', customResult: '自定义对局不计入成长或历史战绩。', xp: '获得 XP',
     chatPlaceholder: '发送给房间内的玩家', viewBlocked: '管理屏蔽名单', close: '关闭', noBlocks: '尚未屏蔽玩家。',
     engineError: '无法启动 3D 渲染。请启用浏览器的硬件加速后重新加载。',
+    ephemeralDemoNotice: '当前为内存试玩模式：账号、战绩与每日任务进度在服务重启后不会保留。',
+    readinessRequired: '机甲模型与 3D 渲染就绪后方可开始公开匹配。',
+    acceptBlockedByModels: '等待原版机甲模型与 3D 渲染就绪后方可确认入场。',
   },
   en: {
     signIn: 'Sign in', register: 'Register', forgot: 'Forgot password', resend: 'Resend verification email', reset: 'Reset password', verify: 'Verify email',
@@ -46,6 +49,9 @@ export const MULTIPLAYER_TEXT = {
     cancelled: 'Match cancelled', cancelledResult: 'No career stats or XP were recorded.', moderation: 'Moderation', draw: 'Draw', customResult: 'Custom games do not count toward progression or career stats.', xp: 'XP earned',
     chatPlaceholder: 'Message players in this room', viewBlocked: 'Manage blocked players', close: 'Close', noBlocks: 'No players blocked.',
     engineError: 'Could not start 3D rendering. Enable hardware acceleration and reload this page.',
+    ephemeralDemoNotice: 'Ephemeral demo mode: accounts, career stats, and daily mission progress reset on server restart.',
+    readinessRequired: 'Wait for 3D rendering and RoboMaster models to load before queuing.',
+    acceptBlockedByModels: 'Wait for RoboMaster models and 3D rendering to finish loading before accepting.',
   },
 } as const;
 

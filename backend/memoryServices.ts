@@ -20,7 +20,8 @@ type MailKind = 'verify' | 'reset';
 interface MemoryAccount {
   id: string;
   email: string;
-  passwordHash: string;
+  passwordHash: string | null;
+  isGuest: boolean;
   verified: boolean;
   banned: boolean;
   mutedUntil: number;
@@ -571,7 +572,7 @@ export async function makeMemoryServices(onRevoked: (id: string, by: 'session' |
       next();
     }, originGuard);
 
-    app.get('/api/auth/mode', (_req, res) => res.json({ standalone: true }));
+    app.get('/api/auth/mode', (_req, res) => res.json({ standalone: true, ephemeral: true }));
     app.get('/api/auth/session', authorized(async (_req, res, { playerId, email }) => res.json({ playerId, email, moderator: admins.has(email) })));
 
     app.post('/api/auth/guest', wrap(async (req, res) => {
@@ -585,7 +586,8 @@ export async function makeMemoryServices(onRevoked: (id: string, by: 'session' |
       const account: MemoryAccount = {
         id,
         email,
-        passwordHash: placeholderHash,
+        passwordHash: null,
+        isGuest: true,
         verified: true,
         banned: false,
         mutedUntil: 0,
@@ -618,6 +620,7 @@ export async function makeMemoryServices(onRevoked: (id: string, by: 'session' |
         id,
         email,
         passwordHash,
+        isGuest: false,
         verified: true,
         banned: false,
         mutedUntil: 0,
@@ -658,9 +661,10 @@ export async function makeMemoryServices(onRevoked: (id: string, by: 'session' |
       if (!(await authLimit(req, 'login', email, 12))) return fail(res, 429, '请求过于频繁');
       const accountId = accountsByEmail.get(email);
       const account = accountId ? accounts.get(accountId) : undefined;
-      const hash = account?.passwordHash || placeholderHash;
+      const hash = account && !account.isGuest && account.passwordHash ? account.passwordHash : placeholderHash;
       const candidate = await hashPassword(password, hash.split(':')[0]);
-      if (!timingSafeEqual(Buffer.from(hash), Buffer.from(candidate)) || !account || account.banned) {
+      const passwordMatches = timingSafeEqual(Buffer.from(hash), Buffer.from(candidate));
+      if (!account || account.isGuest || !account.passwordHash || !passwordMatches || account.banned) {
         return fail(res, 401, '登录失败：邮箱或密码不正确，或账号不可用');
       }
       if (!account.verified) return fail(res, 403, '请先验证邮箱');
@@ -695,7 +699,7 @@ export async function makeMemoryServices(onRevoked: (id: string, by: 'session' |
       if (!entry || entry.kind !== 'reset' || entry.expiresAt <= Date.now()) return fail(res, 400, '重置链接无效或已过期');
       tokens.delete(digest(raw));
       const account = accounts.get(entry.accountId);
-      if (!account) return fail(res, 400, '重置链接无效或已过期');
+      if (!account || account.isGuest) return fail(res, 400, '重置链接无效或已过期');
       account.passwordHash = await hashPassword(password);
       for (const [k, s] of sessions.entries()) {
         if (s.accountId === account.id) sessions.delete(k);
@@ -707,9 +711,16 @@ export async function makeMemoryServices(onRevoked: (id: string, by: 'session' |
 
     app.get('/api/profile', authorized(async (_req, res, { playerId }) => res.json(await getProfile(playerId))));
     app.get('/api/missions', authorized(async (_req, res, { playerId }) => {
+      const nowMs = Date.now();
       const profile = await getProfile(playerId);
-      const dailyMissions = normalizeDailyMissions(profile.dailyMissions, playerId);
-      return res.json({ dailyMissions, credits: profile.stats.credits, nextResetMs: msUntilNextUtcDay() });
+      const dailyMissions = normalizeDailyMissions(profile.dailyMissions, playerId, nowMs);
+      return res.json({
+        dailyMissions,
+        credits: profile.stats.credits,
+        nextResetMs: msUntilNextUtcDay(nowMs),
+        serverTimeMs: nowMs,
+        eligibilityPolicy: missionEligibilityPolicy,
+      });
     }));
     app.post('/api/missions/claim', authorized(async (req, res, { playerId }) => {
       const missionId = req.body?.missionId;
@@ -856,8 +867,11 @@ export async function makeMemoryServices(onRevoked: (id: string, by: 'session' |
     rateLimits.clear();
   };
   const isDraining = async () => process.env.DRAIN_MATCHES === '1';
+  const missionEligibilityPolicy = { publicOnly: false, minMatchSec: 20 };
 
   return {
+    standalone: true,
+    missionEligibilityPolicy,
     install,
     authenticate,
     allowOrigin,

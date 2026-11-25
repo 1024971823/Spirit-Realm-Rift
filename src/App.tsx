@@ -12,6 +12,7 @@ import type { ChatViewProps } from './components/RoomChat';
 import { SettingsModal } from './components/SettingsModal';
 import { StatsModal } from './components/StatsModal';
 import { TitleOverlay } from './components/TitleOverlay';
+import { TrainingModal } from './components/TrainingModal';
 import { LaserTagEngine, type HudLiveState } from './game/LaserTagEngine';
 import { useI18n } from './i18n/LanguageContext';
 import { LOBBY_TEXT, multiplayerError, MULTIPLAYER_TEXT } from './i18n/multiplayer';
@@ -19,6 +20,7 @@ import { ApiError, postJson, requestJson, type AccountSession } from './net/acco
 import { GameNetworkClient, type ChatMessage, type MatchSummaryPayload, type RoomPreview, type RoomSettings, type SessionView } from './net/clientSocket';
 import { INITIAL_TEAM_CREDITS, normalizePlayerProfile } from './shared/catalog';
 import { countClaimableDailyRewards } from './shared/dailyMissions';
+import { isTrainingComplete, normalizeTrainingProgress, type TrainingProgress } from './shared/training';
 import type { ControllerConfig, GamePhase, LoadoutConfig, MatchSnapshot, PlayerProfile, RobotClass } from './shared/types';
 
 const INITIAL_HUD: HudLiveState = {
@@ -57,9 +59,21 @@ const INITIAL_HUD: HudLiveState = {
 };
 
 
-type ActiveModal = 'none' | 'loadout' | 'lobby' | 'stats' | 'settings' | 'moderation' | 'missions';
+type ActiveModal = 'none' | 'loadout' | 'lobby' | 'stats' | 'settings' | 'moderation' | 'missions' | 'training';
 type InviteJoin = { code: string; lastCommand?: string };
 const INVITE_KEY = 'prism-room-invite';
+const TRAINING_KEY = 'prism-training-v1';
+function loadTrainingProgress(): TrainingProgress {
+  try {
+    const raw = localStorage.getItem(TRAINING_KEY);
+    return normalizeTrainingProgress(raw ? JSON.parse(raw) : null);
+  } catch {
+    return { completedSteps: [] };
+  }
+}
+function saveTrainingProgress(next: TrainingProgress) {
+  try { localStorage.setItem(TRAINING_KEY, JSON.stringify(next)); } catch { /* Storage is optional. */ }
+}
 function normalizeInviteCode(value: string) {
   return value.trim().toUpperCase().slice(0, 24) || undefined;
 }
@@ -168,6 +182,11 @@ function Arena({ playerId, moderator, onSignedOut, inviteCode, setInviteCode }: 
   const [blockedIds, setBlockedIds] = useState<string[]>([]);
   const blockedIdsRef = useRef(blockedIds);
   const [matchSummary, setMatchSummary] = useState<MatchSummaryPayload | null>(null);
+  const [trainingProgress, setTrainingProgress] = useState<TrainingProgress>(loadTrainingProgress);
+  const updateTrainingProgress = useCallback((next: TrainingProgress) => {
+    setTrainingProgress(next);
+    saveTrainingProgress(next);
+  }, []);
   const [notice, setNotice] = useState('');
   const currentMatchRef = useRef<string | undefined>(undefined);
   const [resultMatchId, setResultMatchId] = useState<string>();
@@ -509,8 +528,8 @@ function Arena({ playerId, moderator, onSignedOut, inviteCode, setInviteCode }: 
   return <div className="relative h-full w-full overflow-hidden bg-[#0A0D12]">
     <div ref={canvasMountRef} data-testid="arena-canvas-mount" className="fixed inset-0 h-full w-full" />
     {phase === 'title' && activeModal === 'none' && <TitleOverlay profile={profile} connected={connected && synced} pingMs={pingMs} inviteCount={inviteCount + Number(Boolean(inviteCode))}
-      claimableMissionsCount={claimableMissionsCount} onSelectRobotClass={quickSwitch} onStartMatch={() => setActiveModal('lobby')} onOpenLoadout={() => setActiveModal('loadout')}
-      onOpenMissions={() => setActiveModal('missions')} onOpenModeration={moderator ? () => setActiveModal('moderation') : undefined} onOpenStats={() => setActiveModal('stats')} onOpenSettings={() => setActiveModal('settings')} onSignOut={logout} />}
+      claimableMissionsCount={claimableMissionsCount} trainingCompleted={isTrainingComplete(trainingProgress)} onSelectRobotClass={quickSwitch} onStartMatch={() => setActiveModal('lobby')} onOpenLoadout={() => setActiveModal('loadout')}
+      onOpenMissions={() => setActiveModal('missions')} onOpenTraining={() => setActiveModal('training')} onOpenModeration={moderator ? () => setActiveModal('moderation') : undefined} onOpenStats={() => setActiveModal('stats')} onOpenSettings={() => setActiveModal('settings')} onSignOut={logout} />}
     {phase === 'playing' && activeModal === 'none' && connected && synced && <GameHud hud={hud} snapshot={snapshot} localPlayerId={playerId}
       loadout={profile.loadout} controller={profile.controller} pingMs={pingMs} muted={muted} chat={chat} onToggleMute={toggleMute}
       onPause={() => setPhase('paused')} onRequestPointerLock={() => engineRef.current?.requestPointerLock()}
@@ -526,6 +545,7 @@ function Arena({ playerId, moderator, onSignedOut, inviteCode, setInviteCode }: 
     </div>}
     {activeModal === 'loadout' && <LoadoutModal profile={profile} onUpdateLoadout={(loadout: LoadoutConfig) => persistProfile({ loadout })} onClose={() => setActiveModal('none')} />}
     {activeModal === 'missions' && <DailyMissionsModal profile={profile} onProfileUpdated={next => updateProfile(normalizePlayerProfile(next, playerId))} onClose={() => setActiveModal('none')} />}
+    {activeModal === 'training' && <TrainingModal progress={trainingProgress} activeRobotClass={profile.loadout.robotClass} onSelectRobotClass={quickSwitch} onProgressChange={updateTrainingProgress} onGoToLobby={() => setActiveModal('lobby')} onClose={() => setActiveModal('none')} />}
     {activeModal === 'lobby' && <MultiplayerLobby view={view} playerId={playerId} connected={connected && synced} chat={chat}
       rendererError={rendererError} preview={preview} inviteCode={inviteCode} joining={Boolean(joinAttempt)}
       onClose={() => setActiveModal('none')} onQueue={join => { send(join ? 'queue:join' : 'queue:leave'); }}
@@ -540,7 +560,7 @@ function Arena({ playerId, moderator, onSignedOut, inviteCode, setInviteCode }: 
     {activeModal === 'settings' && <SettingsModal profile={profile} onUpdateProfileMeta={callsign => persistProfile({ callsign })}
       onUpdateController={(controller: ControllerConfig) => persistProfile({ controller })} onClose={() => setActiveModal('none')} />}
     {activeModal === 'moderation' && moderator && <ModerationPanel onClose={() => setActiveModal('none')} />}
-    {view.offer && synced && view.room?.phase !== 'active' && <MatchReady key={view.offer.offerId} offer={view.offer} connected={connected} onRespond={accept => { send('queue:confirm', { readyId: view.offer?.offerId, accept }); }} />}
+    {view.offer && synced && view.room?.phase !== 'active' && <MatchReady key={view.offer.offerId} offer={view.offer} connected={connected} rendererError={rendererError} onRespond={accept => { send('queue:confirm', { readyId: view.offer?.offerId, accept }); }} />}
     {(!connected || !synced || rendererError || notice) && <div className="pointer-events-none fixed inset-x-0 top-2 z-[60] flex flex-col items-center gap-2 px-4 text-sm">
       {(!connected || !synced) && <div role="status" className="pointer-events-auto rounded border border-amber-700 bg-[#191303] px-3 py-2 text-amber-200">
         {connectionIssue === 'superseded' ? t.superseded : connectionIssue === 'ineligible' ? multiplayerError(lang, 'ineligible') : t.reconnecting}

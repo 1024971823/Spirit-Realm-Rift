@@ -5,11 +5,14 @@ import {
   buildDailyMissionsForDay,
   claimAllClearBonus,
   claimDailyMission,
+  computeServerResetDeadline,
   countClaimableDailyRewards,
   DAILY_MISSION_ALL_CLEAR_BONUS,
+  evaluateDailyMissionEligibility,
   getUtcDayKey,
   msUntilNextUtcDay,
   normalizeDailyMissions,
+  shouldRefreshDailyMissions,
 } from './dailyMissions.ts';
 import type { DailyMissionContribution } from './types.ts';
 
@@ -26,7 +29,8 @@ test('buildDailyMissionsForDay generates 3 deterministic missions covering comba
   assert.ok(
     a.missions[2].kind === 'mine_ore_with_robot' ||
       a.missions[2].kind === 'deal_damage' ||
-      a.missions[2].kind === 'destroy_barriers',
+      a.missions[2].kind === 'destroy_barriers' ||
+      a.missions[2].kind === 'ally_repair',
   );
   // Every mission has positive target and credit reward
   for (const m of a.missions) {
@@ -35,16 +39,8 @@ test('buildDailyMissionsForDay generates 3 deterministic missions covering comba
   }
 });
 
-test('applyMatchContributionToDailyMissions advances robot-specific and match objectives and caps at target', () => {
+test('applyMatchContributionToDailyMissions advances robot-specific, collaborative repair, and match objectives and caps at target', () => {
   const now = Date.UTC(2026, 10, 24, 10, 0, 0);
-  const initial = buildDailyMissionsForDay(getUtcDayKey(now), 'player-alpha');
-  // Force known templates to exercise robot-specific kills, wins, and EP ore mining
-  initial.missions = [
-    { id: '2026-11-24:s1_kills_5', templateId: 's1_kills_5', kind: 'kills_with_robot', robotClass: 's1_striker', target: 5, progress: 0, rewardCredits: 150 },
-    { id: '2026-11-24:win_2_matches', templateId: 'win_2_matches', kind: 'win_matches', target: 2, progress: 0, rewardCredits: 200 },
-    { id: '2026-11-24:ep_mine_250', templateId: 'ep_mine_250', kind: 'mine_ore_with_robot', robotClass: 'ep_miner', target: 250, progress: 0, rewardCredits: 160 },
-  ];
-
   const contrib: DailyMissionContribution = {
     won: true,
     matchesCompleted: 1,
@@ -52,9 +48,9 @@ test('applyMatchContributionToDailyMissions advances robot-specific and match ob
     oreMinedByRobot: { s1_striker: 50, ep_miner: 120 },
     damageDealt: 320,
     barriersDestroyed: 1,
+    allyRepair: 95,
   };
 
-  // Run normalize first using matching day key
   const { state: s1, updates } = applyMatchContributionToDailyMissions(
     { dayKey: getUtcDayKey(now), missions: buildDailyMissionsForDay(getUtcDayKey(now), 'player-alpha').missions },
     'player-alpha',
@@ -72,9 +68,37 @@ test('applyMatchContributionToDailyMissions advances robot-specific and match ob
     oreMinedByRobot: { s1_striker: 0, ep_miner: 400 },
     damageDealt: 1000,
     barriersDestroyed: 5,
+    allyRepair: 250,
   }, now + 1000);
   assert.ok(s2.missions.every(m => m.progress === m.target && m.completedAt !== undefined));
   assert.equal(countClaimableDailyRewards(s2), 4); // 3 missions + 1 all-clear bonus
+
+  // Explicitly find a deterministic player seed that rolls ep_repair_150 and verify allyRepair progresses it
+  let repairSeed = '';
+  for (let i = 0; i < 64; i++) {
+    const candidate = `repair-player-${i}`;
+    if (buildDailyMissionsForDay(getUtcDayKey(now), candidate).missions[2].kind === 'ally_repair') {
+      repairSeed = candidate;
+      break;
+    }
+  }
+  assert.ok(repairSeed.length > 0, 'Expected at least one seed to roll ep_repair_150');
+  const { state: repaired } = applyMatchContributionToDailyMissions(
+    null,
+    repairSeed,
+    {
+      won: false,
+      matchesCompleted: 1,
+      killsByRobot: { s1_striker: 0, ep_miner: 0 },
+      oreMinedByRobot: { s1_striker: 0, ep_miner: 0 },
+      damageDealt: 0,
+      barriersDestroyed: 0,
+      allyRepair: 160,
+    },
+    now,
+  );
+  assert.equal(repaired.missions[2].kind, 'ally_repair');
+  assert.equal(repaired.missions[2].progress, repaired.missions[2].target);
 });
 
 test('claimDailyMission and claimAllClearBonus enforce completion and idempotency', () => {
@@ -102,6 +126,7 @@ test('claimDailyMission and claimAllClearBonus enforce completion and idempotenc
       oreMinedByRobot: { s1_striker: 0, ep_miner: 500 },
       damageDealt: 1200,
       barriersDestroyed: 10,
+      allyRepair: 200,
     },
     now,
   );
@@ -116,6 +141,7 @@ test('claimDailyMission and claimAllClearBonus enforce completion and idempotenc
       oreMinedByRobot: { s1_striker: 0, ep_miner: 0 },
       damageDealt: 0,
       barriersDestroyed: 0,
+      allyRepair: 0,
     },
     now + 500,
   );
@@ -140,14 +166,77 @@ test('claimDailyMission and claimAllClearBonus enforce completion and idempotenc
   assert.deepEqual(dupBonus, { ok: false, reason: 'already_claimed' });
 });
 
-test('normalizeDailyMissions rolls over cleanly on a new UTC day and msUntilNextUtcDay is accurate', () => {
+test('normalizeDailyMissions rolls over cleanly on a new UTC day and server reset deadline resists client clock skew', () => {
   const day1 = Date.UTC(2026, 10, 24, 23, 59, 0);
   const day2 = Date.UTC(2026, 10, 25, 0, 1, 0);
   assert.equal(msUntilNextUtcDay(day1), 60_000);
+
+  // Even if client clock is skewed 6 hours behind, deadline anchored to server nextResetMs triggers exactly 60s later
+  const skewedClientNow = day1 - 6 * 3600_000;
+  const deadline = computeServerResetDeadline(60_000, skewedClientNow);
+  assert.equal(shouldRefreshDailyMissions(deadline, skewedClientNow + 59_999), false);
+  assert.equal(shouldRefreshDailyMissions(deadline, skewedClientNow + 60_000), true);
 
   const prev = buildDailyMissionsForDay(getUtcDayKey(day1), 'player-gamma');
   prev.missions[0].progress = prev.missions[0].target;
   const rolled = normalizeDailyMissions(prev, 'player-gamma', day2);
   assert.equal(rolled.dayKey, '2026-11-25');
   assert.ok(rolled.missions.every(m => m.progress === 0 && m.claimedAt === undefined));
+});
+
+test('evaluateDailyMissionEligibility enforces publicOnly, minMatchSec, and active participation', () => {
+  const prodPolicy = { publicOnly: true, minMatchSec: 45 };
+  const base = {
+    isPublicMatch: true,
+    cancelled: false,
+    forfeited: false,
+    elapsedSec: 90,
+    reachedScoreLimit: false,
+    damageDealt: 100,
+    oreMined: 0,
+    barriersDestroyed: 0,
+    allyRepair: 0,
+    coreControlSec: 0,
+    kills: 1,
+    policy: prodPolicy,
+  };
+  assert.deepEqual(evaluateDailyMissionEligibility(base), { eligible: true });
+  assert.deepEqual(
+    evaluateDailyMissionEligibility({ ...base, isPublicMatch: false }),
+    { eligible: false, reason: 'private_room_ineligible' },
+  );
+  assert.deepEqual(
+    evaluateDailyMissionEligibility({ ...base, isPublicMatch: false, policy: { publicOnly: false, minMatchSec: 20 } }),
+    { eligible: true },
+  );
+  assert.deepEqual(
+    evaluateDailyMissionEligibility({ ...base, elapsedSec: 25, reachedScoreLimit: false }),
+    { eligible: false, reason: 'match_too_short' },
+  );
+  // Reaching the score limit early still counts as a completed match
+  assert.deepEqual(
+    evaluateDailyMissionEligibility({ ...base, elapsedSec: 25, reachedScoreLimit: true }),
+    { eligible: true },
+  );
+  // Pure AFK participant is rejected, while pure EP engineering participation (ore / repair / control) qualifies
+  assert.deepEqual(
+    evaluateDailyMissionEligibility({ ...base, kills: 0, damageDealt: 0 }),
+    { eligible: false, reason: 'inactive_participant' },
+  );
+  assert.deepEqual(
+    evaluateDailyMissionEligibility({ ...base, kills: 0, damageDealt: 0, oreMined: 30 }),
+    { eligible: true },
+  );
+  assert.deepEqual(
+    evaluateDailyMissionEligibility({ ...base, kills: 0, damageDealt: 0, allyRepair: 25 }),
+    { eligible: true },
+  );
+  assert.deepEqual(
+    evaluateDailyMissionEligibility({ ...base, cancelled: true }),
+    { eligible: false, reason: 'cancelled' },
+  );
+  assert.deepEqual(
+    evaluateDailyMissionEligibility({ ...base, forfeited: true }),
+    { eligible: false, reason: 'forfeited' },
+  );
 });

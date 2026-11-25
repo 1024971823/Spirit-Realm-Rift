@@ -12,9 +12,50 @@ import { RoomChat, type ChatViewProps } from './RoomChat';
 
 import { CopyButton, InviteInbox, LobbyFriends, lobbyField as fieldClass, lobbyAction as actionClass, lobbyAlt as altClass } from './LobbySocial';
 
-export function MatchReady({ offer, connected, onRespond }: { offer: MatchOffer; connected: boolean; onRespond: (accept: boolean) => void }) {
+function useArenaReadiness(rendererError: boolean) {
+  const models = useSyncExternalStore(subscribeRoboMasterLoads, getRoboMasterLoadStatus);
+  const assets = Object.values(models);
+  const ready = !rendererError && assets.every(asset => asset.state === 'ready');
+  const loadFailed = assets.some(asset => asset.state === 'error');
+  const loaded = assets.reduce((sum, asset) => sum + asset.loaded, 0);
+  const total = assets.reduce((sum, asset) => sum + asset.total, 0);
+  return { ready, loadFailed, loaded, total };
+}
+
+function ReadinessStatus({ rendererError, className = 'text-xs text-slate-300' }: { rendererError: boolean; className?: string }) {
   const { lang } = useI18n();
   const t = MULTIPLAYER_TEXT[lang];
+  const labels = LOBBY_TEXT[lang];
+  const { ready, loadFailed, loaded, total } = useArenaReadiness(rendererError);
+  return (
+    <p data-testid="arena-readiness-status" className={className}>
+      <span className={rendererError || loadFailed ? 'text-red-300' : ready ? 'text-emerald-300' : 'text-amber-300'}>
+        {rendererError
+          ? t.engineError
+          : loadFailed
+            ? labels.loadFailed
+            : ready
+              ? labels.modelsReady
+              : labels.loadModels + (total ? ' (' + loaded + '/' + total + ')' : '…')}
+      </span>
+      {loadFailed && (
+        <button type="button" className="ml-2 text-cyan-300 underline hover:text-cyan-200 cursor-pointer" onClick={retryRoboMasterLoads}>
+          {t.retry}
+        </button>
+      )}
+    </p>
+  );
+}
+
+export function MatchReady({ offer, connected, rendererError = false, onRespond }: {
+  offer: MatchOffer;
+  connected: boolean;
+  rendererError?: boolean;
+  onRespond: (accept: boolean) => void;
+}) {
+  const { lang } = useI18n();
+  const t = MULTIPLAYER_TEXT[lang];
+  const readiness = useArenaReadiness(rendererError);
   const [now, setNow] = useState(Date.now);
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 150);
@@ -25,9 +66,11 @@ export function MatchReady({ offer, connected, onRespond }: { offer: MatchOffer;
     <section role="dialog" aria-modal="true" aria-labelledby="ready-title" className="chamfer-panel w-full max-w-sm border border-cyan-400/40 bg-[#0D1726] p-6 text-center shadow-2xl">
       <h2 id="ready-title" className="font-display text-2xl font-bold text-white">{t.ready}</h2>
       <p className="my-3 text-amber-300" role="timer">{t.expires(seconds)}</p>
+      <ReadinessStatus rendererError={rendererError} className="mb-3 text-xs text-slate-300" />
+      {!readiness.ready && !offer.accepted && <p className="mb-3 text-xs text-amber-200">{t.acceptBlockedByModels}</p>}
       {offer.accepted && <p role="status" className="mb-3 text-sm text-slate-300">{t.accepted}{typeof offer.acceptedCount === 'number' ? ' · ' + offer.acceptedCount + '/6' : ''}</p>}
       <div className="flex justify-center gap-3">
-        {!offer.accepted && <button type="button" disabled={!connected || seconds === 0} className={actionClass} onClick={() => onRespond(true)}>{t.accept}</button>}
+        {!offer.accepted && <button type="button" disabled={!connected || seconds === 0 || !readiness.ready} className={actionClass} onClick={() => onRespond(true)}>{t.accept}</button>}
         <button type="button" disabled={!connected || seconds === 0} className={altClass} onClick={() => onRespond(false)}>{t.decline}</button>
       </div>
     </section>
@@ -132,12 +175,7 @@ function PrivateRoom({ props, room }: { props: LobbyProps; room: RoomView }) {
   const { lang } = useI18n();
   const t = MULTIPLAYER_TEXT[lang];
   const labels = LOBBY_TEXT[lang];
-  const models = useSyncExternalStore(subscribeRoboMasterLoads, getRoboMasterLoadStatus);
-  const modelAssets = Object.values(models);
-  const modelsReady = !props.rendererError && modelAssets.every(asset => asset.state === 'ready');
-  const loadFailed = modelAssets.some(asset => asset.state === 'error');
-  const loaded = modelAssets.reduce((sum, asset) => sum + asset.loaded, 0);
-  const total = modelAssets.reduce((sum, asset) => sum + asset.total, 0);
+  const { ready: modelsReady } = useArenaReadiness(props.rendererError);
   const self = room.members.find(member => member.id === props.playerId);
   const isHost = room.hostId === props.playerId;
   const activeCount = room.members.filter(member => member.connected).length;
@@ -165,10 +203,7 @@ function PrivateRoom({ props, room }: { props: LobbyProps; room: RoomView }) {
       </div>
       {room.botFill && <p className="text-xs text-slate-300">{t.botFill}</p>}
       <p role="status" className="text-sm text-slate-300">{labels.readyCount(readyCount, room.members.length)}</p>
-      <p className="text-xs text-slate-300">
-        {props.rendererError ? t.engineError : loadFailed ? labels.loadFailed : modelsReady ? labels.modelsReady : labels.loadModels + (total ? ' (' + loaded + '/' + total + ')' : '…')}
-        {loadFailed && <button type="button" className="ml-2 text-cyan-300" onClick={retryRoboMasterLoads}>{t.retry}</button>}
-      </p>
+      <ReadinessStatus rendererError={props.rendererError} />
       {minPlayers === 1 && <p className="text-xs text-cyan-300">{t.soloTesting}</p>}
       {countdown && <Countdown endsAt={room.countdownEndsAt!} />}
       {!countdown && activeCount < minPlayers && <p className="text-sm text-amber-300">{t.requiredPlayers(minPlayers)}</p>}
@@ -225,6 +260,7 @@ export function MultiplayerLobby(props: LobbyProps) {
   const t = MULTIPLAYER_TEXT[lang];
   const labels = LOBBY_TEXT[lang];
   const { view, connected, playerId } = props;
+  const readiness = useArenaReadiness(props.rendererError);
   const room = view.room;
   const party = view.party;
   const queued = view.queuedAt != null;
@@ -257,10 +293,12 @@ export function MultiplayerLobby(props: LobbyProps) {
           <section className="rounded-lg border border-amber-400/30 bg-amber-500/5 px-4 py-3">
             <h3 className="font-bold text-white">{t.casual}</h3>
             <p className="mt-1 text-sm text-slate-300">{t.casualDescription}</p>
+            <ReadinessStatus rendererError={props.rendererError} className="mt-2 text-xs text-slate-300" />
+            {!readiness.ready && !queued && <p className="mt-1 text-xs text-amber-200">{t.readinessRequired}</p>}
             {queued && <p role="status" className="mt-2 text-sm text-cyan-300">{t.queued}…</p>}
             {!canQueue && <p className="mt-2 text-sm text-slate-300">{labels.leaderQueues}</p>}
             {!partyOnline && <p className="mt-2 text-sm text-amber-300">{labels.partyNotReady}</p>}
-            {canQueue && <button type="button" onClick={() => props.onQueue(!queued)} disabled={!connected || Boolean(view.offer) || props.joining || (!queued && !partyOnline)}
+            {canQueue && <button type="button" onClick={() => props.onQueue(!queued)} disabled={!connected || Boolean(view.offer) || props.joining || (!queued && (!partyOnline || !readiness.ready))}
               className={'mt-3 ' + (queued ? altClass : actionClass)}>{queued ? t.cancelQueue : t.findMatch}</button>}
           </section>
           <section className="space-y-2 rounded-lg border border-cyan-400/25 bg-cyan-500/5 px-4 py-3" aria-label={labels.party}>

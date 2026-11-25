@@ -651,6 +651,78 @@ export const UI_TEXT = {
     missionsClose: '关闭每日任务',
     missionsProgressSummaryTitle: '每日任务进度更新',
     missionsOpenBtn: '查看每日任务',
+    missionsRefreshing: '正在跨天同步新任务…',
+    missionsPolicyPublicOnly: (sec: number) => `结算规则：仅公开匹配有效 · 需满 ${sec} 秒且有实际参战`,
+    missionsPolicyDemo: (sec: number) => `结算规则：公开与自定义房均计入（试玩模式）· 需满 ${sec} 秒且有实际参战`,
+    missionsIneligiblePrivate: '本局为自定义房间，按当前规则不推进每日任务进度。',
+    missionsIneligibleShort: '本局时长过短，未计入每日任务进度。',
+    missionsIneligibleInactive: '本局未检测到有效参战或工程支援贡献，未计入每日任务进度。',
+    missionsIneligibleForfeit: '中途退出对局不计入每日任务进度。',
+    // Team / Engineering Contribution (GameOverModal)
+    teamContributionTitle: '团队与工程支援贡献',
+    contribOreMined: '采集矿石',
+    contribAllyRepair: '友军护盾修复',
+    contribCoreControl: '核心占领',
+    contribBarriers: '破拆掩体',
+    contribDamage: '激光输出',
+    contribEngineerSpotlight: '工程支援亮点：你的采矿与修复为团队提供了关键经济与续航',
+    // Tactical Training Drill
+    trainingBtn: '新手训练营',
+    trainingCompletedShort: '已通关',
+    trainingTitle: '机甲战术短训营',
+    trainingSubtitle: '约 2 分钟掌握全向机动、过热散热、S1/EP 切换、采矿修复、团队补给与战术标记。',
+    trainingProgressLabel: (done: number, total: number) => `训练进度 ${done} / ${total}`,
+    trainingCompletedBanner: '全部 6 项战术基础训练已完成，随时可以前往多人大厅实战！',
+    trainingStepDone: '已完成',
+    trainingStepCurrent: '当前科目',
+    trainingReset: '重置训练',
+    trainingGoLobby: '前往多人大厅',
+    trainingClose: '关闭训练营',
+    trainingSteps: {
+      drive_dash: {
+        title: '1. 全向机动与推进冲刺',
+        keyHint: 'WASD + Shift',
+        desc: 'RoboMaster 底盘采用全向麦克纳姆轮，支持任意方向平移与 [Shift] 推进冲刺来规避扫描激光。',
+        action: '按键盘 W/A/S/D 与 Shift（或点击下方模拟按钮）完成一次闪避机动',
+        btn: '模拟推进冲刺 [Shift]',
+      },
+      fire_vent: {
+        title: '2. 脉冲射击与过热散热',
+        keyHint: 'LMB + R',
+        desc: 'S1 突击手连续开火会积累枪管热量；接近过热前按 [R] 主动散热，避免火力中断。',
+        action: '点击发射 3 次测试光束，然后执行一次快速散热',
+        fireBtn: '发射测试光束 [LMB]',
+        ventBtn: '执行快速散热 [R]',
+      },
+      switch_chassis: {
+        title: '3. 切换 S1 突击手 / EP 工程兵',
+        keyHint: 'U',
+        desc: '按 [U] 可在 S1（武装突击）与 EP（无武装 3 倍采矿 + 友军护盾修复）之间随时切换部署。',
+        action: '在下方将出战机甲在 S1 与 EP 之间切换一次',
+        btn: '切换底盘 [U]',
+      },
+      mine_repair: {
+        title: '4. EP 采矿与友军护盾修复脉冲',
+        keyHint: 'E',
+        desc: 'EP 工程机器人没有发射器，但在矿脉旁按住 [E] 可 3 倍速赚取全队经济，并周期性向附近队友释放护盾/装甲修复脉冲。',
+        action: '点击采集矿脉并触发一次工程修复脉冲',
+        btn: '采集矿石 + 修复脉冲 [E]',
+      },
+      team_resupply: {
+        title: '5. 团队经济与快捷购弹',
+        keyHint: 'B',
+        desc: '全队共享积分池。EP 采集的积分直接供 S1 按 [B] 购买弹匣与战地维修，弹尽时及时补给。',
+        action: '消耗模拟团队积分完成一次满弹匣补给',
+        btn: '购买满弹匣 [B] (-45 积分)',
+      },
+      tactical_ping: {
+        title: '6. 战术标记与小地图协作',
+        keyHint: 'G / 中键',
+        desc: '按 [G] 或鼠标中键可在战场投放战术标记，提示队友集火敌方、支援矿脉或协防控制核心。',
+        action: '在下方战术雷达上点击任意位置发送一次标记',
+        radarHint: '点击雷达区域发送集结 / 矿脉标记',
+      },
+    },
   },
   en: {
     pageTitle: 'Prism Breach — Mech Arena',
@@ -897,6 +969,78 @@ export const UI_TEXT = {
     missionsClose: 'Close Daily Missions',
     missionsProgressSummaryTitle: 'Daily Mission Progress',
     missionsOpenBtn: 'Daily Missions',
+    missionsRefreshing: 'Syncing new daily missions…',
+    missionsPolicyPublicOnly: (sec: number) => `Rules: Public matchmaking only · min ${sec}s with active participation`,
+    missionsPolicyDemo: (sec: number) => `Rules: Public & custom matches count (demo) · min ${sec}s with active participation`,
+    missionsIneligiblePrivate: 'Custom room matches do not advance daily missions under current server rules.',
+    missionsIneligibleShort: 'Match ended too quickly to qualify for daily mission progress.',
+    missionsIneligibleInactive: 'No qualifying combat or engineering contribution detected for daily missions.',
+    missionsIneligibleForfeit: 'Forfeited matches do not advance daily missions.',
+    // Team / Engineering Contribution (GameOverModal)
+    teamContributionTitle: 'Team & Engineering Contribution',
+    contribOreMined: 'Ore Extracted',
+    contribAllyRepair: 'Ally Repair',
+    contribCoreControl: 'Core Control',
+    contribBarriers: 'Barriers Breached',
+    contribDamage: 'Laser Damage',
+    contribEngineerSpotlight: 'Engineering Spotlight: Your harvesting & repair sustained the squad economy',
+    // Tactical Training Drill
+    trainingBtn: 'Training Drill',
+    trainingCompletedShort: 'Cleared',
+    trainingTitle: 'Tactical Mech Training',
+    trainingSubtitle: 'Master omni-drive, heat venting, S1/EP switching, ore extraction, team resupply, and tactical pings in ~2 minutes.',
+    trainingProgressLabel: (done: number, total: number) => `Drill Progress ${done} / ${total}`,
+    trainingCompletedBanner: 'All 6 core tactical drills cleared — ready to deploy in the Multiplayer Lobby!',
+    trainingStepDone: 'Cleared',
+    trainingStepCurrent: 'Active Drill',
+    trainingReset: 'Reset Drills',
+    trainingGoLobby: 'Open Multiplayer Lobby',
+    trainingClose: 'Close Training',
+    trainingSteps: {
+      drive_dash: {
+        title: '1. Omni-Drive & Thruster Dash',
+        keyHint: 'WASD + Shift',
+        desc: 'RoboMaster chassis use Mecanum omni-wheels to strafe freely and [Shift] Thruster Dash past arena laser sweepers.',
+        action: 'Press W/A/S/D + Shift on your keyboard (or trigger the simulator below) to complete a dash maneuver',
+        btn: 'Simulate Thruster Dash [Shift]',
+      },
+      fire_vent: {
+        title: '2. Pulse Fire & Heat Venting',
+        keyHint: 'LMB + R',
+        desc: 'Sustained S1 firing builds emitter heat. Press [R] to vent heat early before locking out your blaster.',
+        action: 'Fire 3 test bursts, then vent emitter heat',
+        fireBtn: 'Fire Test Burst [LMB]',
+        ventBtn: 'Vent Heat [R]',
+      },
+      switch_chassis: {
+        title: '3. Switch S1 Striker / EP Engineer',
+        keyHint: 'U',
+        desc: 'Press [U] anytime to swap between armed S1 Striker and unarmed EP Engineer (3x ore mining + ally shield repair).',
+        action: 'Toggle your active chassis between S1 and EP once below',
+        btn: 'Swap Chassis [U]',
+      },
+      mine_repair: {
+        title: '4. EP Ore Extraction & Ally Repair Pulse',
+        keyHint: 'E',
+        desc: 'EP Engineer carries no blaster, but holding [E] near Ore Veins harvests Team Credits at 3x speed and pulses ally shield/hull repair.',
+        action: 'Run one extraction cycle & shield repair pulse',
+        btn: 'Extract Ore + Repair Pulse [E]',
+      },
+      team_resupply: {
+        title: '5. Team Economy & Quick Resupply',
+        keyHint: 'B',
+        desc: 'Credits are shared across your squad. EP harvests fund S1 strikers pressing [B] to refill magazines and repair armor.',
+        action: 'Spend simulated Team Credits to resupply a full magazine',
+        btn: 'Buy Full Mag [B] (-45 CR)',
+      },
+      tactical_ping: {
+        title: '6. Tactical Ping & Minimap Coordination',
+        keyHint: 'G / Middle Click',
+        desc: 'Press [G] or Middle Click to drop a 3D & minimap beacon calling teammates to an ore vein, core zone, or threat.',
+        action: 'Click anywhere on the tactical radar below to broadcast a ping',
+        radarHint: 'Click radar grid to drop rally / vein ping',
+      },
+    },
   },
 } as const;
 
@@ -912,7 +1056,7 @@ export function formatDailyMissionCopy(
       case 'kills_with_robot':
         return {
           title: `使用 ${unitName} 淘汰 ${target} 名对手`,
-          subtitle: `在对局中驾驶 ${unitName} 完成 ${target} 次击杀（公开或自定义人机房均计入）。`,
+          subtitle: `在有效对局中驾驶 ${unitName} 完成 ${target} 次击杀。`,
           category: `${unitName} · 作战目标`,
         };
       case 'mine_ore_with_robot':
@@ -944,6 +1088,12 @@ export function formatDailyMissionCopy(
           title: `摧毁 ${target} 处战术能量掩体`,
           subtitle: `集中火力击碎竞技场中的 ${target} 处可破坏能量掩体。`,
           category: '阵地破拆',
+        };
+      case 'ally_repair':
+        return {
+          title: `使用 ${unitName} 为队友修复 ${target} 点护盾/装甲`,
+          subtitle: `部署 ${unitName} 靠近队友触发涡轮采矿与修复脉冲，累计提供 ${target} 点友军修复。`,
+          category: `${unitName} · 团队协作`,
         };
     }
   }
@@ -983,6 +1133,12 @@ export function formatDailyMissionCopy(
         title: `Destroy ${target} tactical barriers`,
         subtitle: `Shatter ${target} destructible energy barriers across any arena.`,
         category: 'Breach',
+      };
+    case 'ally_repair':
+      return {
+        title: `Repair ${target} ally shield/hull with ${unitName}`,
+        subtitle: `Deploy ${unitName} near teammates to trigger repair pulses totaling ${target} points.`,
+        category: `${unitName} · Teamwork`,
       };
   }
 }

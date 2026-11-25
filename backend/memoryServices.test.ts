@@ -4,9 +4,9 @@ import type { IncomingMessage } from 'node:http';
 import { test } from 'node:test';
 import express from 'express';
 import { makeMemoryServices } from './memoryServices.ts';
-import type { Result } from './services.ts';
+import { makeServices, type Result } from './services.ts';
 
-test('standalone in-memory services handle guest login, Cloud Run HTTPS origins, social, and match settlement', async t => {
+test('standalone in-memory services handle guest login, block guest password impersonation, Cloud Run HTTPS origins, and match settlement', async t => {
   const prevOrigin = process.env.ORIGIN;
   const prevKey = process.env.PLAYTEST_KEY;
   delete process.env.ORIGIN;
@@ -44,7 +44,7 @@ test('standalone in-memory services handle guest login, Cloud Run HTTPS origins,
 
   const modeRes = await fetch(`${origin}/api/auth/mode`);
   assert.equal(modeRes.status, 200);
-  assert.deepEqual(await modeRes.json(), { standalone: true });
+  assert.deepEqual(await modeRes.json(), { standalone: true, ephemeral: true });
 
   // Guest quick-play issues valid session cookie and profile
   const guestRes = await fetch(`${origin}/api/auth/guest`, {
@@ -56,6 +56,15 @@ test('standalone in-memory services handle guest login, Cloud Run HTTPS origins,
   const guestCookie = guestRes.headers.get('set-cookie')?.split(';')[0] ?? '';
   const guestData = (await guestRes.json()) as { playerId: string };
   assert.ok(guestCookie.startsWith('prism_session='));
+
+  // Guest accounts MUST NOT be loggable via password login (even with historical placeholder password)
+  const guestEmail = `guest-${guestData.playerId}@local.prism`;
+  const impersonateRes = await fetch(`${origin}/api/auth/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Origin: origin },
+    body: JSON.stringify({ email: guestEmail, password: 'placeholder-password-never-used' }),
+  });
+  assert.equal(impersonateRes.status, 401);
 
   // X-Forwarded-Proto: https adds Secure attribute to session cookie
   const httpsRes = await fetch(`${origin}/api/auth/guest`, {
@@ -104,7 +113,44 @@ test('standalone in-memory services handle guest login, Cloud Run HTTPS origins,
   assert.equal(((await matchRes.json()) as { status: string }).status, 'finished');
 });
 
-test('daily missions progress via match settlement, claim rewards idempotently, and resist profile spoofing', async t => {
+test('makeServices blocks silent memory fallback in production unless ALLOW_MEMORY_MODE=1 (and never when PUBLIC_ACCESS=1)', async t => {
+  const saved = {
+    NODE_ENV: process.env.NODE_ENV,
+    DATABASE_URL: process.env.DATABASE_URL,
+    REDIS_URL: process.env.REDIS_URL,
+    PUBLIC_ACCESS: process.env.PUBLIC_ACCESS,
+    ALLOW_MEMORY_MODE: process.env.ALLOW_MEMORY_MODE,
+  };
+  t.after(() => {
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  });
+
+  delete process.env.DATABASE_URL;
+  delete process.env.REDIS_URL;
+  process.env.NODE_ENV = 'production';
+  delete process.env.PUBLIC_ACCESS;
+  delete process.env.ALLOW_MEMORY_MODE;
+
+  // Missing DB/Redis in production without explicit opt-in MUST fail fast
+  await assert.rejects(() => makeServices(), /ALLOW_MEMORY_MODE=1/);
+
+  // PUBLIC_ACCESS=1 MUST reject memory mode even when ALLOW_MEMORY_MODE=1 is set
+  process.env.PUBLIC_ACCESS = '1';
+  process.env.ALLOW_MEMORY_MODE = '1';
+  await assert.rejects(() => makeServices(), /DATABASE_URL and REDIS_URL are required/);
+
+  // Explicit ALLOW_MEMORY_MODE=1 in non-public production starts in-memory demo mode
+  process.env.PUBLIC_ACCESS = '0';
+  process.env.ALLOW_MEMORY_MODE = '1';
+  const svc = await makeServices();
+  t.after(() => svc.close());
+  assert.equal(svc.standalone, true);
+});
+
+test('daily missions progress via match settlement, handle concurrent claims safely, and resist profile spoofing', async t => {
   const prevOrigin = process.env.ORIGIN;
   delete process.env.ORIGIN;
   t.after(() => {
@@ -138,10 +184,15 @@ test('daily missions progress via match settlement, claim rewards idempotently, 
     dailyMissions: { missions: Array<{ id: string; progress: number; target: number; rewardCredits: number }> };
     credits: number;
     nextResetMs: number;
+    serverTimeMs: number;
+    eligibilityPolicy: { publicOnly: boolean; minMatchSec: number };
   };
   assert.equal(initialData.dailyMissions.missions.length, 3);
   assert.equal(initialData.credits, 0);
   assert.ok(initialData.nextResetMs > 0);
+  assert.ok(initialData.serverTimeMs > 0);
+  assert.equal(typeof initialData.eligibilityPolicy.publicOnly, 'boolean');
+  assert.ok(initialData.eligibilityPolicy.minMatchSec > 0);
 
   // Claiming an incomplete mission is rejected with 409
   const earlyClaim = await fetch(`${origin}/api/missions/claim`, {
@@ -165,6 +216,7 @@ test('daily missions progress via match settlement, claim rewards idempotently, 
         matchesCompleted: 1,
         damageDealt: 700,
         barriersDestroyed: 4,
+        allyRepair: 200,
         killsByRobot: { s1_striker: 9, ep_miner: 0 },
         oreMinedByRobot: { s1_striker: 0, ep_miner: 300 },
       },
@@ -187,42 +239,41 @@ test('daily missions progress via match settlement, claim rewards idempotently, 
   assert.equal(afterSave.stats.credits, 0);
   assert.ok(afterSave.dailyMissions?.missions.every(m => m.progress >= m.target));
 
-  // Claim all 3 individual missions + verify duplicate claim fails
+  // Concurrent claims on each mission must award credits exactly once
   let expectedCredits = 0;
   for (const m of initialData.dailyMissions.missions) {
-    const claimRes = await fetch(`${origin}/api/missions/claim`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Origin: origin, Cookie: cookie },
-      body: JSON.stringify({ missionId: m.id }),
-    });
-    assert.equal(claimRes.status, 200);
-    const body = (await claimRes.json()) as { creditsAwarded: number; profile: { stats: { credits: number } } };
+    const [r1, r2] = await Promise.all([
+      fetch(`${origin}/api/missions/claim`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Origin: origin, Cookie: cookie },
+        body: JSON.stringify({ missionId: m.id }),
+      }),
+      fetch(`${origin}/api/missions/claim`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Origin: origin, Cookie: cookie },
+        body: JSON.stringify({ missionId: m.id }),
+      }),
+    ]);
+    const statuses = [r1.status, r2.status].sort((a, b) => a - b);
+    assert.deepEqual(statuses, [200, 409]);
     expectedCredits += m.rewardCredits;
-    assert.equal(body.creditsAwarded, m.rewardCredits);
-    assert.equal(body.profile.stats.credits, expectedCredits);
-
-    const dupRes = await fetch(`${origin}/api/missions/claim`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Origin: origin, Cookie: cookie },
-      body: JSON.stringify({ missionId: m.id }),
-    });
-    assert.equal(dupRes.status, 409);
+    const latestProfile = await services.getProfile(playerId);
+    assert.equal(latestProfile.stats.credits, expectedCredits);
   }
 
-  // Claim All-Clear bonus (+200 credits) + duplicate rejection
-  const bonusRes = await fetch(`${origin}/api/missions/claim-bonus`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Origin: origin, Cookie: cookie },
-  });
-  assert.equal(bonusRes.status, 200);
-  const bonusBody = (await bonusRes.json()) as { creditsAwarded: number; profile: { stats: { credits: number } } };
-  assert.equal(bonusBody.creditsAwarded, 200);
-  assert.equal(bonusBody.profile.stats.credits, expectedCredits + 200);
-
-  const dupBonus = await fetch(`${origin}/api/missions/claim-bonus`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Origin: origin, Cookie: cookie },
-  });
-  assert.equal(dupBonus.status, 409);
+  // Concurrent All-Clear bonus claims must award +200 credits exactly once
+  const [b1, b2] = await Promise.all([
+    fetch(`${origin}/api/missions/claim-bonus`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Origin: origin, Cookie: cookie },
+    }),
+    fetch(`${origin}/api/missions/claim-bonus`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Origin: origin, Cookie: cookie },
+    }),
+  ]);
+  const bonusStatuses = [b1.status, b2.status].sort((a, b) => a - b);
+  assert.deepEqual(bonusStatuses, [200, 409]);
+  assert.equal((await services.getProfile(playerId)).stats.credits, expectedCredits + 200);
 });
 

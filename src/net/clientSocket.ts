@@ -1,4 +1,15 @@
-import type { AmmoPackId, BeamVisualEvent, DailyMissionSummaryUpdate, GameModeId, MapId, MatchSnapshot, TeamId } from '../shared/types';
+import type {
+  AmmoPackId,
+  BeamVisualEvent,
+  DailyMissionIneligibleReason,
+  DailyMissionSummaryUpdate,
+  GameModeId,
+  MapId,
+  MatchSnapshot,
+  RobotClass,
+  TeamId,
+} from '../shared/types';
+import { SnapshotRehydrator, type CompactMatchSnapshot } from '../shared/snapshotCodec';
 import type { PartyView, SocialInvite, TacticalPing } from '../shared/social';
 
 export interface ChatMessage {
@@ -16,16 +27,25 @@ export interface MatchSummaryPayload {
   cancelled?: boolean;
   isPrivate?: boolean;
   mode?: GameModeId;
+  robotClass?: RobotClass;
   winningTeam?: string;
   winnerName?: string;
   placement?: number;
   kills: number;
   deaths: number;
   accuracy: number;
+  damageDealt?: number;
+  oreMined?: number;
+  allyRepair?: number;
+  coreControlSec?: number;
+  barriersDestroyed?: number;
+  pingsSent?: number;
   xpEarned: number;
   newXp?: number;
   scoreCobalt: number;
   scoreAmber: number;
+  missionEligible?: boolean;
+  missionIneligibleReason?: DailyMissionIneligibleReason;
   missionUpdates?: DailyMissionSummaryUpdate[];
 }
 
@@ -117,6 +137,7 @@ export class GameNetworkClient {
   private pendingOpen = 0;
   private clockOffsetMs: number | undefined;
   private retryCount = 0;
+  private snapshotRehydrator = new SnapshotRehydrator();
 
   setListeners(listeners: ClientSocketListeners): void {
     this.listeners = listeners;
@@ -129,6 +150,7 @@ export class GameNetworkClient {
     url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
     const ws = new WebSocket(url);
     this.clockOffsetMs = undefined;
+    this.snapshotRehydrator.reset();
     this.ws = ws;
     this.pendingOpen = window.setTimeout(() => ws.close(), 8000);
 
@@ -189,10 +211,16 @@ export class GameNetworkClient {
         }
         case 'room:joined':
         case 'room:reset':
-          if (payload.snapshot) this.listeners.onSnapshot?.(payload.snapshot as MatchSnapshot);
+          if (payload.snapshot) {
+            this.listeners.onSnapshot?.(
+              this.snapshotRehydrator.hydrate(payload.snapshot as MatchSnapshot | CompactMatchSnapshot),
+            );
+          }
           break;
         case 'match:state':
-          this.listeners.onSnapshot?.(payload as unknown as MatchSnapshot);
+          this.listeners.onSnapshot?.(
+            this.snapshotRehydrator.hydrate(payload as unknown as MatchSnapshot | CompactMatchSnapshot),
+          );
           break;
         case 'match:beam':
           this.listeners.onBeam?.(payload as unknown as BeamVisualEvent);
@@ -238,6 +266,7 @@ export class GameNetworkClient {
 
   dispose(): void {
     this.disposed = true;
+    this.snapshotRehydrator.reset();
     window.clearTimeout(this.reconnectTimer);
     window.clearTimeout(this.pendingOpen);
     window.clearInterval(this.pingTimer);

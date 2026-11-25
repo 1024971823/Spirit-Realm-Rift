@@ -291,7 +291,20 @@ export type DailyMissionObjectiveKind =
   | 'play_matches'
   | 'mine_ore_with_robot'
   | 'deal_damage'
-  | 'destroy_barriers';
+  | 'destroy_barriers'
+  | 'ally_repair';
+
+export type DailyMissionIneligibleReason =
+  | 'cancelled'
+  | 'forfeited'
+  | 'private_room_ineligible'
+  | 'match_too_short'
+  | 'inactive_participant';
+
+export interface DailyMissionEligibilityPolicy {
+  publicOnly: boolean;
+  minMatchSec: number;
+}
 
 export interface DailyMissionProgress {
   id: string;
@@ -318,6 +331,7 @@ export interface DailyMissionContribution {
   oreMinedByRobot: Record<RobotClass, number>;
   damageDealt: number;
   barriersDestroyed: number;
+  allyRepair?: number;
 }
 
 export interface DailyMissionSummaryUpdate {

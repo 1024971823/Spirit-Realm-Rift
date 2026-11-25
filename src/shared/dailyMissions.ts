@@ -1,5 +1,7 @@
 import type {
   DailyMissionContribution,
+  DailyMissionEligibilityPolicy,
+  DailyMissionIneligibleReason,
   DailyMissionObjectiveKind,
   DailyMissionProgress,
   DailyMissionsState,
@@ -74,6 +76,14 @@ export const DAILY_MISSION_TEMPLATES: readonly DailyMissionTemplate[] = [
     target: 3,
     rewardCredits: 140,
   },
+  {
+    templateId: 'ep_repair_150',
+    slot: 'tactical',
+    kind: 'ally_repair',
+    robotClass: 'ep_miner',
+    target: 150,
+    rewardCredits: 170,
+  },
 ];
 
 const TEMPLATE_BY_ID = new Map<string, DailyMissionTemplate>(
@@ -94,6 +104,60 @@ export function msUntilNextUtcDay(nowMs = Date.now()): number {
   const d = new Date(nowMs);
   const nextMidnight = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + 1, 0, 0, 0, 0);
   return Math.max(0, nextMidnight - nowMs);
+}
+
+export function computeServerResetDeadline(
+  nextResetMs: number,
+  clientNowMs = Date.now(),
+): number {
+  const safeMs = Number.isFinite(nextResetMs) ? Math.max(0, Math.floor(nextResetMs)) : 0;
+  return clientNowMs + safeMs;
+}
+
+export function shouldRefreshDailyMissions(
+  deadlineMs: number,
+  clientNowMs = Date.now(),
+): boolean {
+  return clientNowMs >= deadlineMs;
+}
+
+export interface MissionEligibilityInput {
+  isPublicMatch: boolean;
+  cancelled: boolean;
+  forfeited: boolean;
+  elapsedSec: number;
+  reachedScoreLimit: boolean;
+  damageDealt: number;
+  oreMined: number;
+  barriersDestroyed: number;
+  allyRepair: number;
+  coreControlSec: number;
+  kills: number;
+  policy: DailyMissionEligibilityPolicy;
+}
+
+export function evaluateDailyMissionEligibility(
+  input: MissionEligibilityInput,
+): { eligible: true } | { eligible: false; reason: DailyMissionIneligibleReason } {
+  if (input.cancelled) return { eligible: false, reason: 'cancelled' };
+  if (input.forfeited) return { eligible: false, reason: 'forfeited' };
+  if (input.policy.publicOnly && !input.isPublicMatch) {
+    return { eligible: false, reason: 'private_room_ineligible' };
+  }
+  if (!input.reachedScoreLimit && input.elapsedSec < input.policy.minMatchSec) {
+    return { eligible: false, reason: 'match_too_short' };
+  }
+  const hasParticipation =
+    input.kills > 0 ||
+    input.damageDealt >= 20 ||
+    input.oreMined >= 15 ||
+    input.barriersDestroyed > 0 ||
+    input.allyRepair >= 15 ||
+    input.coreControlSec >= 3;
+  if (!hasParticipation) {
+    return { eligible: false, reason: 'inactive_participant' };
+  }
+  return { eligible: true };
 }
 
 function hashSeed(input: string): number {
@@ -197,6 +261,8 @@ function getContributionDelta(mission: DailyMissionProgress, contribution: Daily
       return Math.max(0, Math.floor(contribution.damageDealt));
     case 'destroy_barriers':
       return Math.max(0, Math.floor(contribution.barriersDestroyed));
+    case 'ally_repair':
+      return Math.max(0, Math.floor(contribution.allyRepair ?? 0));
   }
 }
 

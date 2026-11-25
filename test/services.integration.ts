@@ -65,16 +65,54 @@ test('PostgreSQL and Redis: verification, recovery, exactly-once XP, owner fenci
   const owner = randomUUID(), match = randomUUID();
   await services.renewOwner(owner);
   await services.openMatch(match,owner,[playerId]);
-  const result: Result = {playerId,summary:{matchId:match},progress:{mapId:'reactor_foundry',mode:'team_clash',won:true,kills:2,deaths:1,assists:1,shotsFired:8,shotsHit:2,damageDealt:100,hazardKills:0,barriersDestroyed:1,weaponId:'pulse_carbine',xpEarned:181}};
+  const missionContrib = { won: true, matchesCompleted: 1, damageDealt: 800, barriersDestroyed: 5, allyRepair: 200, killsByRobot: { s1_striker: 10, ep_miner: 0 }, oreMinedByRobot: { s1_striker: 0, ep_miner: 300 } };
+  const result: Result = {playerId,summary:{matchId:match},progress:{mapId:'reactor_foundry',mode:'team_clash',won:true,kills:2,deaths:1,assists:1,shotsFired:8,shotsHit:2,damageDealt:100,hazardKills:0,barriersDestroyed:1,weaponId:'pulse_carbine',xpEarned:181},missionContribution:missionContrib};
   await assert.rejects(services.commitResults(match,[result],randomUUID()));
-  // The roster and XP are both rolled back when an invalid participant appears at finalize.
+  // The roster, XP, and daily missions are all rolled back when an invalid participant appears at finalize.
   await assert.rejects(services.commitResults(match,[result,{...result,playerId:staff.playerId}],owner));
   assert.equal((await services.getProfile(playerId)).stats.xp,0);
+  assert.ok(((await call('missions', undefined, cookie)).json.dailyMissions.missions as Array<{ progress: number }>).every(m => m.progress === 0), 'Daily mission progress must roll back on failed match commit');
   await Promise.all([services.commitResults(match,[structuredClone(result)],owner),services.commitResults(match,[structuredClone(result)],owner)]);
   assert.equal((await services.getProfile(playerId)).stats.xp,181);
   const persisted = await call('matches/'+match,undefined,cookie);
   assert.equal(persisted.json.summary.newXp,181);
   assert.equal((await call('matches/'+match,undefined,staff.cookie)).status,404);
+
+  // Settle two additional matches so all 3 daily missions reach completion, then test PostgreSQL row-lock concurrency & UTC rollover.
+  for (let extra = 0; extra < 2; extra++) {
+    const extraMatch = randomUUID();
+    await services.openMatch(extraMatch, owner, [playerId]);
+    await services.commitResults(extraMatch, [{ playerId, summary: { matchId: extraMatch }, missionContribution: missionContrib }], owner);
+  }
+  const missionsBeforeClaim = await call('missions', undefined, cookie);
+  assert.equal(missionsBeforeClaim.status, 200);
+  assert.ok(missionsBeforeClaim.json.serverTimeMs > 0);
+  assert.equal(missionsBeforeClaim.json.eligibilityPolicy.publicOnly, true);
+  const completedMissions = missionsBeforeClaim.json.dailyMissions.missions as Array<{ id: string; rewardCredits: number }>;
+  let expectedMissionCredits = 0;
+  for (const m of completedMissions) {
+    const [c1, c2] = await Promise.all([
+      call('missions/claim', { missionId: m.id }, cookie),
+      call('missions/claim', { missionId: m.id }, cookie),
+    ]);
+    assert.deepEqual([c1.status, c2.status].sort((a, b) => a - b), [200, 409]);
+    expectedMissionCredits += m.rewardCredits;
+  }
+  const [bonus1, bonus2] = await Promise.all([
+    call('missions/claim-bonus', {}, cookie),
+    call('missions/claim-bonus', {}, cookie),
+  ]);
+  assert.deepEqual([bonus1.status, bonus2.status].sort((a, b) => a - b), [200, 409]);
+  assert.equal((await services.getProfile(playerId)).stats.credits, expectedMissionCredits + 200);
+
+  // Simulate UTC day rollover by backdating stored dailyMissions.dayKey in PostgreSQL
+  const oldMissionId = completedMissions[0].id.replace(/^\d{4}-\d{2}-\d{2}/, '2020-01-01');
+  await db.query(`UPDATE accounts SET profile = jsonb_set(profile, '{dailyMissions,dayKey}', '"2020-01-01"', true) WHERE id=$1`, [playerId]);
+  const rolledMissions = await call('missions', undefined, cookie);
+  assert.equal(rolledMissions.status, 200);
+  assert.notEqual(rolledMissions.json.dailyMissions.dayKey, '2020-01-01');
+  assert.ok((rolledMissions.json.dailyMissions.missions as Array<{ progress: number }>).every(m => m.progress === 0));
+  assert.equal((await call('missions/claim', { missionId: oldMissionId }, cookie)).status, 404);
 
   const orphan = randomUUID();
   await services.openMatch(orphan,owner,[playerId]);
