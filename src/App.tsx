@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { soundEngine } from './audio/soundEngine';
 import { AccountPanel, accountActionFromUrl } from './components/AccountPanel';
+import { DailyMissionsModal } from './components/DailyMissionsModal';
 import { GameHud } from './components/GameHud';
 import { GameOverModal } from './components/GameOverModal';
 import { LoadoutModal } from './components/LoadoutModal';
@@ -17,6 +18,7 @@ import { LOBBY_TEXT, multiplayerError, MULTIPLAYER_TEXT } from './i18n/multiplay
 import { ApiError, postJson, requestJson, type AccountSession } from './net/account';
 import { GameNetworkClient, type ChatMessage, type MatchSummaryPayload, type RoomPreview, type RoomSettings, type SessionView } from './net/clientSocket';
 import { INITIAL_TEAM_CREDITS, normalizePlayerProfile } from './shared/catalog';
+import { countClaimableDailyRewards } from './shared/dailyMissions';
 import type { ControllerConfig, GamePhase, LoadoutConfig, MatchSnapshot, PlayerProfile, RobotClass } from './shared/types';
 
 const INITIAL_HUD: HudLiveState = {
@@ -55,7 +57,7 @@ const INITIAL_HUD: HudLiveState = {
 };
 
 
-type ActiveModal = 'none' | 'loadout' | 'lobby' | 'stats' | 'settings' | 'moderation';
+type ActiveModal = 'none' | 'loadout' | 'lobby' | 'stats' | 'settings' | 'moderation' | 'missions';
 type InviteJoin = { code: string; lastCommand?: string };
 const INVITE_KEY = 'prism-room-invite';
 function normalizeInviteCode(value: string) {
@@ -502,12 +504,13 @@ function Arena({ playerId, moderator, onSignedOut, inviteCode, setInviteCode }: 
     if (view.room) send(action, { ...payload, version: view.room.version });
   };
   const inviteCount = view.invites?.filter(invite => !blockedIds.includes(invite.senderId)).length ?? 0;
+  const claimableMissionsCount = countClaimableDailyRewards(profile.dailyMissions);
 
   return <div className="relative h-full w-full overflow-hidden bg-[#0A0D12]">
     <div ref={canvasMountRef} data-testid="arena-canvas-mount" className="fixed inset-0 h-full w-full" />
     {phase === 'title' && activeModal === 'none' && <TitleOverlay profile={profile} connected={connected && synced} pingMs={pingMs} inviteCount={inviteCount + Number(Boolean(inviteCode))}
-      onSelectRobotClass={quickSwitch} onStartMatch={() => setActiveModal('lobby')} onOpenLoadout={() => setActiveModal('loadout')}
-      onOpenModeration={moderator ? () => setActiveModal('moderation') : undefined} onOpenStats={() => setActiveModal('stats')} onOpenSettings={() => setActiveModal('settings')} onSignOut={logout} />}
+      claimableMissionsCount={claimableMissionsCount} onSelectRobotClass={quickSwitch} onStartMatch={() => setActiveModal('lobby')} onOpenLoadout={() => setActiveModal('loadout')}
+      onOpenMissions={() => setActiveModal('missions')} onOpenModeration={moderator ? () => setActiveModal('moderation') : undefined} onOpenStats={() => setActiveModal('stats')} onOpenSettings={() => setActiveModal('settings')} onSignOut={logout} />}
     {phase === 'playing' && activeModal === 'none' && connected && synced && <GameHud hud={hud} snapshot={snapshot} localPlayerId={playerId}
       loadout={profile.loadout} controller={profile.controller} pingMs={pingMs} muted={muted} chat={chat} onToggleMute={toggleMute}
       onPause={() => setPhase('paused')} onRequestPointerLock={() => engineRef.current?.requestPointerLock()}
@@ -515,13 +518,14 @@ function Arena({ playerId, moderator, onSignedOut, inviteCode, setInviteCode }: 
     {phase === 'paused' && activeModal === 'none' && connected && synced && <PauseModal robotClass={profile.loadout.robotClass} onQuickSwitchClass={quickSwitch}
       onResume={() => { setPhase('playing'); engineRef.current?.requestPointerLock(); }} onOpenLoadout={() => setActiveModal('loadout')}
       onOpenSettings={() => setActiveModal('settings')} onReturnToTitle={leave} />}
-    {phase === 'gameover' && matchSummary && <GameOverModal summary={matchSummary} isPrivate={matchSummary.isPrivate ?? view.room?.isPrivate ?? snapshot?.isPrivate ?? false}
+    {phase === 'gameover' && matchSummary && activeModal === 'none' && <GameOverModal summary={matchSummary} isPrivate={matchSummary.isPrivate ?? view.room?.isPrivate ?? snapshot?.isPrivate ?? false}
       onPlayAgain={!matchSummary.isPrivate && !view.room && !snapshot?.isPrivate && connected && synced && (!view.party || view.party.leaderId === playerId) ? () => { dismissResult(); send('queue:join'); } : undefined}
-      onReturnToTitle={dismissResult} />}
+      onOpenMissions={() => setActiveModal('missions')} onReturnToTitle={dismissResult} />}
     {phase === 'gameover' && !matchSummary && <div className="fixed inset-0 z-30 grid place-items-center bg-black/75 p-4">
       <section className="rounded bg-[#101926] p-6 text-center"><p role="status">{t.resultPending}</p><button type="button" className="mt-4 text-cyan-300" onClick={dismissResult}>{t.lobby}</button></section>
     </div>}
     {activeModal === 'loadout' && <LoadoutModal profile={profile} onUpdateLoadout={(loadout: LoadoutConfig) => persistProfile({ loadout })} onClose={() => setActiveModal('none')} />}
+    {activeModal === 'missions' && <DailyMissionsModal profile={profile} onProfileUpdated={next => updateProfile(normalizePlayerProfile(next, playerId))} onClose={() => setActiveModal('none')} />}
     {activeModal === 'lobby' && <MultiplayerLobby view={view} playerId={playerId} connected={connected && synced} chat={chat}
       rendererError={rendererError} preview={preview} inviteCode={inviteCode} joining={Boolean(joinAttempt)}
       onClose={() => setActiveModal('none')} onQueue={join => { send(join ? 'queue:join' : 'queue:leave'); }}

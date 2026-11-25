@@ -1,5 +1,5 @@
 import React from 'react';
-import { Cpu, Crosshair, Pickaxe, Shield, Sliders, Trophy } from 'lucide-react';
+import { Cpu, Crosshair, Pickaxe, Shield, Sliders, Target, Trophy } from 'lucide-react';
 import { useI18n } from '../i18n/LanguageContext';
 import { ROBOT_CLASS_I18N, translateXpRank } from '../i18n/translations';
 import { getXpRank, ROBOT_CLASSES } from '../shared/catalog';
@@ -12,9 +12,11 @@ interface TitleOverlayProps {
   connected: boolean;
   pingMs: number;
   inviteCount?: number;
+  claimableMissionsCount?: number;
   onSelectRobotClass: (robotClass: RobotClass) => void;
   onStartMatch: () => void;
   onOpenLoadout: () => void;
+  onOpenMissions: () => void;
   onSignOut: () => void;
   onOpenModeration?: () => void;
   onOpenStats: () => void;
@@ -26,9 +28,11 @@ export const TitleOverlay: React.FC<TitleOverlayProps> = ({
   connected,
   pingMs,
   inviteCount = 0,
+  claimableMissionsCount = 0,
   onSelectRobotClass,
   onStartMatch,
   onOpenLoadout,
+  onOpenMissions,
   onSignOut,
   onOpenModeration,
   onOpenStats,
@@ -58,6 +62,10 @@ export const TitleOverlay: React.FC<TitleOverlayProps> = ({
           <span aria-hidden="true" className="text-slate-600">|</span>
           <span style={{ color: rank.color }}>
             {translateXpRank(rank.name, lang)} · {profile.stats.xp} XP
+          </span>
+          <span aria-hidden="true" className="text-slate-600">|</span>
+          <span className="text-amber-400">
+            {profile.stats.credits} {t.creditsSuffix}
           </span>
           <span aria-hidden="true" className="text-slate-600">|</span>
           <span className={connected ? 'text-emerald-400' : 'text-amber-400'}>
@@ -179,6 +187,27 @@ export const TitleOverlay: React.FC<TitleOverlayProps> = ({
           <div className="grid grid-cols-2 gap-2">
             <button
               type="button"
+              data-missions="true"
+              onClick={onOpenMissions}
+              className={`chamfer-sm flex items-center justify-between gap-2 px-4 py-2.5 border text-sm font-medium transition-colors cursor-pointer whitespace-nowrap ${
+                claimableMissionsCount > 0
+                  ? 'bg-[#191B12] hover:bg-[#232518] border-amber-400/50 text-amber-200'
+                  : 'bg-[#121926] hover:bg-[#1A2436] border-white/10 text-slate-100'
+              }`}
+            >
+              <span className="flex items-center gap-2.5 min-w-0">
+                <Target className="w-4 h-4 text-amber-400 shrink-0" />
+                <span className="truncate">{t.dailyMissions}</span>
+              </span>
+              {claimableMissionsCount > 0 && (
+                <span className="font-mono-tabular text-[11px] font-bold text-amber-400 shrink-0">
+                  {t.dailyMissionsReady(claimableMissionsCount)}
+                </span>
+              )}
+            </button>
+
+            <button
+              type="button"
               onClick={onOpenLoadout}
               className="chamfer-sm flex items-center gap-2.5 px-4 py-2.5 bg-[#121926] hover:bg-[#1A2436] border border-white/10 text-slate-100 text-sm font-medium transition-colors cursor-pointer whitespace-nowrap"
             >
@@ -203,7 +232,7 @@ export const TitleOverlay: React.FC<TitleOverlayProps> = ({
               <Sliders className="w-4 h-4 text-slate-300 shrink-0" />
               <span>{t.controlsPad}</span>
             </button>
-            {onOpenModeration && <button type="button" onClick={onOpenModeration} className="chamfer-sm px-4 py-2.5 bg-[#121926] border border-white/10 text-left text-sm text-amber-300">{multiplayer.moderation}</button>}
+            {onOpenModeration && <button type="button" onClick={onOpenModeration} className="chamfer-sm col-span-2 px-4 py-2.5 bg-[#121926] border border-white/10 text-left text-sm text-amber-300">{multiplayer.moderation}</button>}
           </div>
         </div>
       </div>

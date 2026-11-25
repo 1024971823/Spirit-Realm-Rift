@@ -7,8 +7,16 @@ import { Pool, type PoolClient } from 'pg';
 import { createClient } from 'redis';
 import nodemailer from 'nodemailer';
 import { normalizePlayerProfile } from '../src/shared/catalog.ts';
-import type { GameModeId, MapId, PlayerProfile, WeaponId } from '../src/shared/types.ts';
+import {
+  applyMatchContributionToDailyMissions,
+  claimAllClearBonus,
+  claimDailyMission,
+  msUntilNextUtcDay,
+  normalizeDailyMissions,
+} from '../src/shared/dailyMissions.ts';
+import type { DailyMissionContribution, GameModeId, MapId, PlayerProfile, WeaponId } from '../src/shared/types.ts';
 import { minorWindowEnd, permitted, restrictEligibility, type Eligibility } from './eligibility.ts';
+import { makeMemoryServices } from './memoryServices.ts';
 import { createSocial, readFriendCode, type SocialError } from './social.ts';
 
 export type Auth = { playerId: string; sessionId: string; email: string };
@@ -17,7 +25,12 @@ export type Progress = {
   kills: number; deaths: number; assists: number; shotsFired: number; shotsHit: number;
   damageDealt: number; hazardKills: number; barriersDestroyed: number; weaponId: WeaponId; xpEarned: number;
 };
-export type Result = { playerId: string; summary: Record<string, unknown>; progress?: Progress };
+export type Result = {
+  playerId: string;
+  summary: Record<string, unknown>;
+  progress?: Progress;
+  missionContribution?: DailyMissionContribution;
+};
 type MailKind = 'verify' | 'reset';
 const sessionCookie = 'prism_session';
 const sessionSeconds = 30 * 24 * 3_600;
@@ -42,7 +55,11 @@ export async function makeServices(onRevoked: (id: string, by: 'session' | 'acco
   const publicAccess = PUBLIC_ACCESS === '1';
   const devMail = process.env.TEST_MAILBOX === '1';
   const localHttp = process.env.LOCAL_HTTP === '1' && !publicAccess;
-  if (!DATABASE_URL || !REDIS_URL) throw new Error('DATABASE_URL and REDIS_URL are required');
+  if (!DATABASE_URL || !REDIS_URL) {
+    if (publicAccess) throw new Error('DATABASE_URL and REDIS_URL are required');
+    console.log('Starting in standalone in-memory mode (DATABASE_URL / REDIS_URL not configured).');
+    return makeMemoryServices(onRevoked);
+  }
   if (prod && !ORIGIN) throw new Error('Production requires an explicit ORIGIN');
   const canonicalOrigin = ORIGIN ? new URL(ORIGIN).origin : null;
   if ((publicAccess || (prod && !localHttp)) && !canonicalOrigin?.startsWith('https://')) throw new Error('HTTPS ORIGIN required');
@@ -247,22 +264,30 @@ export async function makeServices(onRevoked: (id: string, by: 'session' | 'acco
         const row = await c.query('SELECT player_id FROM match_players WHERE match_id=$1 AND player_id=$2', [matchId, result.playerId]);
         if (!row.rowCount) throw new Error('Result player was not on the starting roster');
         const progress = result.progress;
-        if (progress) {
+        const missionContribution = result.missionContribution;
+        if (progress || missionContribution) {
           const { rows } = await c.query('SELECT profile FROM accounts WHERE id=$1 FOR UPDATE', [result.playerId]);
           const profile = normalizePlayerProfile(rows[0].profile, result.playerId);
-          const stats = profile.stats;
-          stats.matchesPlayed++;
-          if (progress.won) stats.wins++;
-          else if (!progress.draw) stats.losses++;
-          for (const field of ['kills','deaths','assists','shotsFired','shotsHit','damageDealt','hazardKills','barriersDestroyed'] as const) stats[field] += Math.round(progress[field]);
-          const weapon = stats.weaponStats[progress.weaponId];
-          if (weapon) for (const field of ['kills','shotsFired','shotsHit','damageDealt'] as const) weapon[field] += Math.round(progress[field]);
-          stats.xp += progress.xpEarned;
-          stats.credits += Math.round(progress.xpEarned * 0.75);
-          stats.recentMatches = [{ id: matchId, timestamp: Date.now(), mapId: progress.mapId, mode: progress.mode, won: progress.won,
-            ...(progress.draw ? { draw: true } : {}), kills: progress.kills, deaths: progress.deaths, accuracy: progress.shotsFired > 0 ? Math.round(progress.shotsHit * 100 / progress.shotsFired) : 0,
-            mmrDelta: 0, xpEarned: progress.xpEarned }, ...stats.recentMatches].slice(0, 10);
-          result.summary.newXp = stats.xp;
+          if (progress) {
+            const stats = profile.stats;
+            stats.matchesPlayed++;
+            if (progress.won) stats.wins++;
+            else if (!progress.draw) stats.losses++;
+            for (const field of ['kills','deaths','assists','shotsFired','shotsHit','damageDealt','hazardKills','barriersDestroyed'] as const) stats[field] += Math.round(progress[field]);
+            const weapon = stats.weaponStats[progress.weaponId];
+            if (weapon) for (const field of ['kills','shotsFired','shotsHit','damageDealt'] as const) weapon[field] += Math.round(progress[field]);
+            stats.xp += progress.xpEarned;
+            stats.credits += Math.round(progress.xpEarned * 0.75);
+            stats.recentMatches = [{ id: matchId, timestamp: Date.now(), mapId: progress.mapId, mode: progress.mode, won: progress.won,
+              ...(progress.draw ? { draw: true } : {}), kills: progress.kills, deaths: progress.deaths, accuracy: progress.shotsFired > 0 ? Math.round(progress.shotsHit * 100 / progress.shotsFired) : 0,
+              mmrDelta: 0, xpEarned: progress.xpEarned }, ...stats.recentMatches].slice(0, 10);
+            result.summary.newXp = stats.xp;
+          }
+          if (missionContribution) {
+            const applied = applyMatchContributionToDailyMissions(profile.dailyMissions, result.playerId, missionContribution);
+            profile.dailyMissions = applied.state;
+            if (applied.updates.length > 0) result.summary.missionUpdates = applied.updates;
+          }
           await c.query('UPDATE accounts SET profile=$2 WHERE id=$1', [result.playerId, profile]);
         }
         await c.query('UPDATE match_players SET summary=$3 WHERE match_id=$1 AND player_id=$2', [matchId, result.playerId, result.summary]);
@@ -331,6 +356,7 @@ export async function makeServices(onRevoked: (id: string, by: 'session' | 'acco
   }
   function install(app: Express) {
     app.use('/api', (_req, res, next) => { res.setHeader('Cache-Control', 'no-store'); next(); }, originGuard);
+    app.get('/api/auth/mode', (_req, res) => res.json({ standalone: false }));
     app.get('/api/auth/session', authorized(async (_req, res, { playerId, email }) => res.json({ playerId, email, moderator: admins.has(email) })));
     app.post('/api/auth/register', wrap(async (req,res) => {
       if (!publicAccess && PLAYTEST_KEY && !keyMatches(req) && req.body?.playtestKey !== PLAYTEST_KEY) return fail(res, 403, '需要封闭测试访问码');
@@ -440,6 +466,54 @@ export async function makeServices(onRevoked: (id: string, by: 'session' | 'acco
       return ok(res);
     }));
     app.get('/api/profile', authorized(async (_req,res,{playerId}) => res.json(await getProfile(playerId))));
+    app.get('/api/missions', authorized(async (_req, res, { playerId }) => {
+      const profile = await getProfile(playerId);
+      const dailyMissions = normalizeDailyMissions(profile.dailyMissions, playerId);
+      return res.json({ dailyMissions, credits: profile.stats.credits, nextResetMs: msUntilNextUtcDay() });
+    }));
+    app.post('/api/missions/claim', authorized(async (req, res, { playerId }) => {
+      const missionId = req.body?.missionId;
+      if (typeof missionId !== 'string' || !missionId.trim() || missionId.length > 64) {
+        return fail(res, 400, '无效的任务编号');
+      }
+      if (!await limit('missions:claim:' + playerId, 30, 60)) return fail(res, 429, '请求过于频繁');
+      const outcome = await tx(async c => {
+        const { rows } = await c.query('SELECT profile FROM accounts WHERE id=$1 FOR UPDATE', [playerId]);
+        if (!rows[0]) throw new Error('Account does not exist');
+        const profile = normalizePlayerProfile(rows[0].profile, playerId);
+        const claimed = claimDailyMission(profile.dailyMissions, playerId, missionId.trim());
+        if (!claimed.ok) return claimed;
+        profile.dailyMissions = claimed.state;
+        profile.stats.credits += claimed.creditsAwarded;
+        await c.query('UPDATE accounts SET profile=$2 WHERE id=$1', [playerId, profile]);
+        return { ok: true as const, profile, creditsAwarded: claimed.creditsAwarded };
+      });
+      if (!outcome.ok) {
+        if (outcome.reason === 'not_found') return fail(res, 404, '未找到对应的每日任务');
+        if (outcome.reason === 'not_completed') return fail(res, 409, '任务尚未完成');
+        return fail(res, 409, '该任务奖励已领取');
+      }
+      return res.json({ ok: true, profile: outcome.profile, creditsAwarded: outcome.creditsAwarded });
+    }));
+    app.post('/api/missions/claim-bonus', authorized(async (_req, res, { playerId }) => {
+      if (!await limit('missions:claim:' + playerId, 30, 60)) return fail(res, 429, '请求过于频繁');
+      const outcome = await tx(async c => {
+        const { rows } = await c.query('SELECT profile FROM accounts WHERE id=$1 FOR UPDATE', [playerId]);
+        if (!rows[0]) throw new Error('Account does not exist');
+        const profile = normalizePlayerProfile(rows[0].profile, playerId);
+        const claimed = claimAllClearBonus(profile.dailyMissions, playerId);
+        if (!claimed.ok) return claimed;
+        profile.dailyMissions = claimed.state;
+        profile.stats.credits += claimed.creditsAwarded;
+        await c.query('UPDATE accounts SET profile=$2 WHERE id=$1', [playerId, profile]);
+        return { ok: true as const, profile, creditsAwarded: claimed.creditsAwarded };
+      });
+      if (!outcome.ok) {
+        if (outcome.reason === 'not_completed') return fail(res, 409, '请先完成全部今日任务');
+        return fail(res, 409, '全清奖励已领取');
+      }
+      return res.json({ ok: true, profile: outcome.profile, creditsAwarded: outcome.creditsAwarded });
+    }));
     app.get('/api/matches/:id', authorized(async (req,res,{playerId}) => {
       const result = await getResult(playerId,req.params.id);
       return result ? res.json(result) : fail(res,404,'找不到这场对局');

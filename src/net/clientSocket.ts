@@ -1,4 +1,4 @@
-import type { AmmoPackId, BeamVisualEvent, GameModeId, MapId, MatchSnapshot, TeamId } from '../shared/types';
+import type { AmmoPackId, BeamVisualEvent, DailyMissionSummaryUpdate, GameModeId, MapId, MatchSnapshot, TeamId } from '../shared/types';
 import type { PartyView, SocialInvite, TacticalPing } from '../shared/social';
 
 export interface ChatMessage {
@@ -26,6 +26,7 @@ export interface MatchSummaryPayload {
   newXp?: number;
   scoreCobalt: number;
   scoreAmber: number;
+  missionUpdates?: DailyMissionSummaryUpdate[];
 }
 
 export interface RoomSettings {

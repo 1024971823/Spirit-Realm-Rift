@@ -1,6 +1,7 @@
 export const MULTIPLAYER_TEXT = {
   zh: {
     signIn: '登录', register: '注册', forgot: '忘记密码', resend: '重发验证邮件', reset: '重置密码', verify: '验证邮箱',
+    quickPlay: '游客快速进入',
     signOut: '退出账号', email: '邮箱', password: '密码', callsign: '玩家昵称', testKey: '封闭测试密钥（如有）',
     accountIntro: '登录后可跨设备同步档案，并进入联机大厅。', loading: '正在读取账号…',
     working: '请稍候…', verifyInstruction: '确认验证此邮箱后，即可使用邮箱和密码登录。',
@@ -24,6 +25,7 @@ export const MULTIPLAYER_TEXT = {
   },
   en: {
     signIn: 'Sign in', register: 'Register', forgot: 'Forgot password', resend: 'Resend verification email', reset: 'Reset password', verify: 'Verify email',
+    quickPlay: 'Quick play as guest',
     signOut: 'Sign out', email: 'Email', password: 'Password', callsign: 'Callsign', testKey: 'Closed test key (if provided)',
     accountIntro: 'Sign in to sync your profile across devices and enter the multiplayer lobby.', loading: 'Loading your account…',
     working: 'Please wait…', verifyInstruction: 'Confirm this email address, then sign in with your email and password.',

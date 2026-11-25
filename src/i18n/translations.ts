@@ -1,6 +1,7 @@
 import type {
   AmmoPackId,
   ControllerConfig,
+  DailyMissionObjectiveKind,
   GadgetId,
   GameModeId,
   MapId,
@@ -419,6 +420,8 @@ export const UI_TEXT = {
     matchmakingVoice: '匹配与语音',
     careerTelemetry: '生涯战绩',
     controlsPad: '控制与设置',
+    dailyMissions: '每日任务',
+    dailyMissionsReady: (n: number) => `${n} 项可领取`,
     titleHints:
       'WASD 移动 · 鼠标瞄准 · 左键射击 · Shift 冲刺 · Q 战术模块 · E 技能/采矿 · B 买弹药 · U 切换 S1/EP',
     // GameHud
@@ -631,6 +634,23 @@ export const UI_TEXT = {
     rightDeadzone: '右摇杆死区',
     actionBindings: '按键绑定',
     resetDefaults: '恢复默认',
+    // DailyMissionsModal
+    missionsTitle: '每日作战任务',
+    missionsSubtitle: '完成每日战术目标，赢取额外生涯积分奖励。',
+    missionsResetIn: (hms: string) => `距离重置 ${hms} (UTC)`,
+    missionsBalanceLabel: '当前积分余额',
+    missionsClaimBtn: (credits: number) => `领取 +${credits} 积分`,
+    missionsClaiming: '领取中...',
+    missionsClaimed: '已领取',
+    missionsInProgress: '进行中',
+    missionsCompletedTag: '已完成',
+    missionsAllClearTitle: '每日全清奖励',
+    missionsAllClearDesc: (done: number, total: number) => `完成今日全部 ${total} 项任务即可领取额外奖励（当前 ${done}/${total}）。`,
+    missionsClaimBonusBtn: (credits: number) => `领取全清奖励 +${credits} 积分`,
+    missionsRewardReceived: (credits: number) => `已到账 +${credits} 积分`,
+    missionsClose: '关闭每日任务',
+    missionsProgressSummaryTitle: '每日任务进度更新',
+    missionsOpenBtn: '查看每日任务',
   },
   en: {
     pageTitle: 'Prism Breach — Mech Arena',
@@ -645,6 +665,8 @@ export const UI_TEXT = {
     matchmakingVoice: 'Matchmaking & Voice',
     careerTelemetry: 'Career Telemetry',
     controlsPad: 'Controls & Pad',
+    dailyMissions: 'Daily Missions',
+    dailyMissionsReady: (n: number) => `${n} Ready`,
     titleHints:
       'WASD Drive · Mouse Aim · LMB Fire · Shift Dash · Q Gadget · E Skill/Mine · B Buy Ammo · U Switch S1/EP',
     // GameHud
@@ -858,5 +880,110 @@ export const UI_TEXT = {
     rightDeadzone: 'Right Deadzone',
     actionBindings: 'Action Bindings',
     resetDefaults: 'Reset Defaults',
+    // DailyMissionsModal
+    missionsTitle: 'Daily Missions',
+    missionsSubtitle: 'Complete daily tactical objectives to earn bonus career credits.',
+    missionsResetIn: (hms: string) => `Resets in ${hms} (UTC)`,
+    missionsBalanceLabel: 'Career Credits',
+    missionsClaimBtn: (credits: number) => `Claim +${credits} CR`,
+    missionsClaiming: 'Claiming...',
+    missionsClaimed: 'Claimed',
+    missionsInProgress: 'In Progress',
+    missionsCompletedTag: 'Completed',
+    missionsAllClearTitle: 'All-Clear Bonus',
+    missionsAllClearDesc: (done: number, total: number) => `Complete all ${total} daily missions to unlock the bonus payout (${done}/${total}).`,
+    missionsClaimBonusBtn: (credits: number) => `Claim Bonus +${credits} CR`,
+    missionsRewardReceived: (credits: number) => `+${credits} CR Credited`,
+    missionsClose: 'Close Daily Missions',
+    missionsProgressSummaryTitle: 'Daily Mission Progress',
+    missionsOpenBtn: 'Daily Missions',
   },
 } as const;
+
+export function formatDailyMissionCopy(
+  kind: DailyMissionObjectiveKind,
+  target: number,
+  robotClass: RobotClass | undefined,
+  lang: Language,
+): { title: string; subtitle: string; category: string } {
+  const unitName = robotClass ? ROBOT_CLASS_I18N[lang][robotClass].shortName : '';
+  if (lang === 'zh') {
+    switch (kind) {
+      case 'kills_with_robot':
+        return {
+          title: `使用 ${unitName} 淘汰 ${target} 名对手`,
+          subtitle: `在对局中驾驶 ${unitName} 完成 ${target} 次击杀（公开或自定义人机房均计入）。`,
+          category: `${unitName} · 作战目标`,
+        };
+      case 'mine_ore_with_robot':
+        return {
+          title: `使用 ${unitName} 采集 ${target} 单位矿石`,
+          subtitle: `部署 ${unitName} 靠近矿脉长按 [E] 采矿，为队伍累计提取 ${target} 单位矿石。`,
+          category: `${unitName} · 工程支援`,
+        };
+      case 'win_matches':
+        return {
+          title: `赢得 ${target} 场对局胜利`,
+          subtitle: `在任意模式中拿下 ${target} 场胜利，展现团队统治力。`,
+          category: '竞技胜利',
+        };
+      case 'play_matches':
+        return {
+          title: `完成 ${target} 场完整对局`,
+          subtitle: `参与并打完 ${target} 场不中途退出的完整竞技场对局。`,
+          category: '出战频次',
+        };
+      case 'deal_damage':
+        return {
+          title: `累计造成 ${target} 点激光伤害`,
+          subtitle: `使用任意发射器对敌方机甲造成累计 ${target} 点伤害。`,
+          category: '火力输出',
+        };
+      case 'destroy_barriers':
+        return {
+          title: `摧毁 ${target} 处战术能量掩体`,
+          subtitle: `集中火力击碎竞技场中的 ${target} 处可破坏能量掩体。`,
+          category: '阵地破拆',
+        };
+    }
+  }
+  switch (kind) {
+    case 'kills_with_robot':
+      return {
+        title: `Get ${target} kills with ${unitName}`,
+        subtitle: `Pilot ${unitName} and score ${target} eliminations in completed matches.`,
+        category: `${unitName} · Combat`,
+      };
+    case 'mine_ore_with_robot':
+      return {
+        title: `Extract ${target} ore with ${unitName}`,
+        subtitle: `Deploy ${unitName} near ore veins and hold [E] to harvest ${target} ore.`,
+        category: `${unitName} · Engineering`,
+      };
+    case 'win_matches':
+      return {
+        title: `Win ${target} matches`,
+        subtitle: `Secure ${target} arena victories in any game mode.`,
+        category: 'Victory',
+      };
+    case 'play_matches':
+      return {
+        title: `Complete ${target} matches`,
+        subtitle: `Play ${target} full arena matches to completion without forfeiting.`,
+        category: 'Deployment',
+      };
+    case 'deal_damage':
+      return {
+        title: `Deal ${target} laser damage`,
+        subtitle: `Inflict ${target} total damage against enemy mechs with any emitter.`,
+        category: 'Firepower',
+      };
+    case 'destroy_barriers':
+      return {
+        title: `Destroy ${target} tactical barriers`,
+        subtitle: `Shatter ${target} destructible energy barriers across any arena.`,
+        category: 'Breach',
+      };
+  }
+}
+

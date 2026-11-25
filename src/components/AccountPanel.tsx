@@ -1,7 +1,7 @@
-import { useState, type FormEvent } from 'react';
+import { useEffect, useState, type FormEvent } from 'react';
 import { useI18n } from '../i18n/LanguageContext';
 import { LOBBY_TEXT, MULTIPLAYER_TEXT } from '../i18n/multiplayer';
-import { postJson, type AccountSession } from '../net/account';
+import { postJson, requestJson, type AccountSession } from '../net/account';
 import { LanguageSwitch } from './LanguageSwitch';
 
 type AccountMode = 'login' | 'register' | 'forgot' | 'resend' | 'verify' | 'reset';
@@ -33,7 +33,29 @@ export function AccountPanel({ onSignIn, inviteCode, onDismissInvite }: {
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
   const [pending, setPending] = useState(false);
+  const [standalone, setStandalone] = useState(false);
   const labels = { login: t.signIn, register: t.register, forgot: t.forgot, resend: t.resend, verify: t.verify, reset: t.reset };
+
+  useEffect(() => {
+    let active = true;
+    void requestJson<{ standalone?: boolean }>('/api/auth/mode')
+      .then(res => { if (active && res.standalone) setStandalone(true); })
+      .catch(() => {});
+    return () => { active = false; };
+  }, []);
+
+  const guestSignIn = async () => {
+    if (pending) return;
+    setError('');
+    setMessage('');
+    setPending(true);
+    try {
+      const result = await postJson<AccountSession>('/api/auth/guest', {});
+      if ('playerId' in result) { onSignIn(result); return; }
+      throw new Error(t.error);
+    } catch (err) { setError(err instanceof Error && err.message ? err.message : t.error); }
+    finally { setPending(false); }
+  };
 
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -50,7 +72,7 @@ export function AccountPanel({ onSignIn, inviteCode, onDismissInvite }: {
     setPending(true);
     try {
       const result = await postJson<AccountSession | { ok: true }>('/api/auth/' + mode, payload, key ? { 'x-playtest-key': key } : undefined);
-      if (mode === 'login' && 'playerId' in result) { onSignIn(result); return; }
+      if ((mode === 'login' || mode === 'register') && 'playerId' in result) { onSignIn(result); return; }
       if (mode === 'login') throw new Error(t.error);
       setMessage({ register: t.registerDone, forgot: t.forgotDone, resend: t.registerDone, verify: t.verifyDone, reset: t.resetDone }[mode]);
       clearAccountLink();
@@ -87,6 +109,11 @@ export function AccountPanel({ onSignIn, inviteCode, onDismissInvite }: {
             <label className="grid gap-1 text-sm">{t.testKey}<input className={field} name="testKey" type="password" autoComplete="off" maxLength={200} /></label>
           </>}
           <button type="submit" disabled={pending} className="chamfer-btn bg-amber-400 px-4 py-2.5 font-bold text-slate-950 hover:bg-amber-300 disabled:opacity-60">{pending ? t.working : labels[mode]}</button>
+          {standalone && mode === 'login' && (
+            <button type="button" disabled={pending} onClick={() => void guestSignIn()} className="chamfer-sm border border-cyan-400/45 bg-cyan-500/12 px-4 py-2.5 text-sm font-semibold text-cyan-200 hover:bg-cyan-500/20 disabled:opacity-60 cursor-pointer">
+              {t.quickPlay}
+            </button>
+          )}
         </form>
         {error && <p role="alert" className="mt-3 text-sm text-red-300">{error}</p>}
         {message && <p role="status" className="mt-3 text-sm text-emerald-300">{message}</p>}

@@ -285,6 +285,53 @@ export interface PlayerCareerStats {
   recentMatches: MatchHistoryRecord[];
 }
 
+export type DailyMissionObjectiveKind =
+  | 'kills_with_robot'
+  | 'win_matches'
+  | 'play_matches'
+  | 'mine_ore_with_robot'
+  | 'deal_damage'
+  | 'destroy_barriers';
+
+export interface DailyMissionProgress {
+  id: string;
+  templateId: string;
+  kind: DailyMissionObjectiveKind;
+  robotClass?: RobotClass;
+  target: number;
+  progress: number;
+  rewardCredits: number;
+  completedAt?: number;
+  claimedAt?: number;
+}
+
+export interface DailyMissionsState {
+  dayKey: string;
+  missions: DailyMissionProgress[];
+  allClearClaimedAt?: number;
+}
+
+export interface DailyMissionContribution {
+  won: boolean;
+  matchesCompleted: number;
+  killsByRobot: Record<RobotClass, number>;
+  oreMinedByRobot: Record<RobotClass, number>;
+  damageDealt: number;
+  barriersDestroyed: number;
+}
+
+export interface DailyMissionSummaryUpdate {
+  id: string;
+  templateId: string;
+  kind: DailyMissionObjectiveKind;
+  robotClass?: RobotClass;
+  before: number;
+  after: number;
+  target: number;
+  rewardCredits: number;
+  newlyCompleted: boolean;
+}
+
 export interface PlayerProfile {
   id: string;
   callsign: string;
@@ -293,6 +340,7 @@ export interface PlayerProfile {
   loadout: LoadoutConfig;
   controller: ControllerConfig;
   stats: PlayerCareerStats;
+  dailyMissions?: DailyMissionsState;
 }
 
 export interface FriendEntry {

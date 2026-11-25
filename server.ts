@@ -80,7 +80,12 @@ const INVITE_MS = 60_000;
 const PING_COOLDOWN_MS = 2_000;
 const PING_LIFETIME_MS = 6_000;
 const ROOM_SIZE = 6;
-const PRIVATE_ROOM_MIN_PLAYERS = process.env.PUBLIC_ACCESS !== '1' && process.env.ALLOW_SOLO_PLAYTEST === '1' ? 1 : 2;
+const STANDALONE_MODE = !process.env.DATABASE_URL || !process.env.REDIS_URL;
+const PRIVATE_ROOM_MIN_PLAYERS =
+  process.env.PUBLIC_ACCESS !== '1' &&
+  (process.env.ALLOW_SOLO_PLAYTEST === '1' || (STANDALONE_MODE && process.env.ALLOW_SOLO_PLAYTEST !== '0'))
+    ? 1
+    : 2;
 const TICK_MS = 50;
 const MAX_SEND_BUFFER = 512 * 1024;
 const ONLINE_LIMIT = Math.floor(clampNum(process.env.ONLINE_LIMIT ?? (process.env.PUBLIC_ACCESS === '1' ? 100 : 1000), 6, 2000, 100));
@@ -122,6 +127,8 @@ interface ServerCombatant extends CombatantSnapshot {
   shotsHitMatch: number;
   hazardKillsMatch: number;
   barriersDestroyedMatch: number;
+  killsByRobot: Record<RobotClass, number>;
+  oreMinedByRobot: Record<RobotClass, number>;
   shieldActiveUntil: number;
   overclockUntil: number;
   oreFracBuffer: number;
@@ -453,6 +460,8 @@ function ensureRoomBots(room: ServerRoom): void {
         shotsHitMatch: 0,
         hazardKillsMatch: 0,
         barriersDestroyedMatch: 0,
+        killsByRobot: { s1_striker: 0, ep_miner: 0 },
+        oreMinedByRobot: { s1_striker: 0, ep_miner: 0 },
         shieldActiveUntil: 0,
         overclockUntil: 0,
         oreFracBuffer: 0,
@@ -610,6 +619,7 @@ function applyDamage(
 
     if (attacker && attacker.id !== victim.id) {
       attacker.kills += 1;
+      attacker.killsByRobot[attacker.robotClass] = (attacker.killsByRobot[attacker.robotClass] ?? 0) + 1;
       if (isHazard) attacker.hazardKillsMatch += 1;
       if (room.config.mode === 'ffa') {
         let topKills = 0;
@@ -737,6 +747,7 @@ function stepBotAi(room: ServerRoom, bot: ServerCombatant, dt: number, now: numb
             const whole = Math.floor(bot.oreFracBuffer);
             bot.oreFracBuffer -= whole;
             bot.oreMined += whole;
+            bot.oreMinedByRobot[bot.robotClass] = (bot.oreMinedByRobot[bot.robotClass] ?? 0) + whole;
             addTeamCredits(room, bot.team, whole);
           }
         }
@@ -1100,6 +1111,8 @@ function createCombatant(room: ServerRoom, member: Member): ServerCombatant {
     shotsHitMatch: 0,
     hazardKillsMatch: 0,
     barriersDestroyedMatch: 0,
+    killsByRobot: { s1_striker: 0, ep_miner: 0 },
+    oreMinedByRobot: { s1_striker: 0, ep_miner: 0 },
     shieldActiveUntil: 0,
     overclockUntil: 0,
     oreFracBuffer: 0,
@@ -1287,6 +1300,7 @@ function gameplay(room: ServerRoom, playerId: string, type: string, payload: Rec
           const whole = Math.floor(p.oreFracBuffer);
           p.oreFracBuffer -= whole;
           p.oreMined += whole;
+          p.oreMinedByRobot[p.robotClass] = (p.oreMinedByRobot[p.robotClass] ?? 0) + whole;
           addTeamCredits(room, p.team, whole);
         }
       }
@@ -1846,6 +1860,7 @@ async function settleMatch(room: ServerRoom, worker: GameWorker, adjudication?: 
     const won = !draw && !member.forfeited && (room.config.mode === 'ffa' ? outcome.winnerId === p.id : p.team === winningTeam);
     const result = adjudication === 'cancelled' ? 'cancelled' : member.forfeited ? 'forfeit' : draw ? 'draw' : won ? 'win' : 'loss';
     const progressEnabled = room.publicMatch && adjudication !== 'cancelled' && !member.forfeited;
+    const missionsEnabled = adjudication !== 'cancelled' && !member.forfeited;
     const xpEarned = progressEnabled ? 80 + p.kills * 18 + (won ? 65 : 20) : 0;
     results.push({ playerId: member.id, summary: {
       matchId, result, ranked: false, isPrivate: room.config.isPrivate, draw: result === 'draw', cancelled: result === 'cancelled', won: result === 'win', mode: room.config.mode,
@@ -1860,6 +1875,13 @@ async function settleMatch(room: ServerRoom, worker: GameWorker, adjudication?: 
       shotsFired: p.shotsFiredMatch, shotsHit: p.shotsHitMatch, damageDealt: p.damageDealt,
       hazardKills: p.hazardKillsMatch, barriersDestroyed: p.barriersDestroyedMatch,
       weaponId: p.weaponId, xpEarned,
+    } } : {}), ...(missionsEnabled ? { missionContribution: {
+      won,
+      matchesCompleted: 1,
+      damageDealt: Math.round(p.damageDealt),
+      barriersDestroyed: p.barriersDestroyedMatch,
+      killsByRobot: { ...p.killsByRobot },
+      oreMinedByRobot: { ...p.oreMinedByRobot },
     } } : {}) });
   }
   const commit = async (attempt: number): Promise<void> => {
@@ -2692,7 +2714,8 @@ async function startServer(): Promise<void> {
     return room?.phase === 'active' ? 'in_match' : room ? 'in_room' : 'online';
   });
   await services.lobby.claim(OWNER_ID);
-  const expectedWorkers = Math.round(clampNum(process.env.GAME_WORKERS ?? Math.min(4, availableParallelism()), 1, 32, 2));
+  const defaultWorkers = STANDALONE_MODE ? 1 : Math.min(4, availableParallelism());
+  const expectedWorkers = Math.round(clampNum(process.env.GAME_WORKERS ?? defaultWorkers, 1, 32, defaultWorkers));
   gamePool = createGamePool<GameCommand, GameEvent>({
     entry: __filename,
     count: expectedWorkers,
@@ -2704,6 +2727,7 @@ async function startServer(): Promise<void> {
   const app = express();
   const trustedProxy = process.env.TRUST_PROXY;
   if (trustedProxy) app.set('trust proxy', /^\d+$/.test(trustedProxy) ? Number(trustedProxy) : trustedProxy);
+  else if (process.env.K_SERVICE) app.set('trust proxy', 1);
   app.disable('x-powered-by');
   app.use(express.json({ limit: '24kb' }));
   services.install(app);

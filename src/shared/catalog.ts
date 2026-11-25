@@ -16,6 +16,7 @@ import type {
   WeaponId,
   WeaponSpec,
 } from './types.ts';
+import { normalizeDailyMissions } from './dailyMissions.ts';
 
 export const ROBOT_CLASSES: Record<RobotClass, RobotClassSpec> = {
   s1_striker: {
@@ -425,6 +426,7 @@ export function normalizePlayerProfile(
     loadout: sanitizeLoadoutForXp(src.loadout, DEFAULT_LOADOUT, xp),
     controller: normalizeControllerConfig(src.controller),
     stats,
+    dailyMissions: normalizeDailyMissions(src.dailyMissions, id),
   };
 }
 
