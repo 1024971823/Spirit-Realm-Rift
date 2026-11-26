@@ -145,19 +145,20 @@ export function encodeCompactMatchSnapshot(
   const includeAntiCheat = options.includeAntiCheat ?? false;
 
   const players: CompactCombatantSnapshot[] = full.players.map(p => {
+    const quantize = p.isBot ? round2 : round3;
     const out: CompactCombatantSnapshot = {
       id: p.id,
       isBot: p.isBot,
       robotClass: p.robotClass,
       team: p.team,
-      x: round2(p.x),
-      y: round2(p.y),
-      z: round2(p.z),
+      x: quantize(p.x),
+      y: quantize(p.y),
+      z: quantize(p.z),
       yaw: round3(p.yaw),
       chassisYaw: round3(p.chassisYaw),
       pitch: round3(p.pitch),
-      vx: round2(p.vx),
-      vz: round2(p.vz),
+      vx: quantize(p.vx),
+      vz: quantize(p.vz),
       hp: Math.round(p.hp),
       shield: Math.round(p.shield),
       ammo: Math.max(0, Math.round(p.ammo)),

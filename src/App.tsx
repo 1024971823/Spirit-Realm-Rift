@@ -302,6 +302,7 @@ function Arena({ playerId, initialProfile, moderator, onSignedOut, inviteCode, s
       } catch { setRendererError(true); }
     }
     let snapshotRoundId: string | undefined;
+    let lastSnapshotReactPush = 0;
     let resumePhase: GamePhase = 'playing';
     let active = true;
     const initialBannerTimer = window.setTimeout(() => {
@@ -396,8 +397,13 @@ function Arena({ playerId, initialProfile, moderator, onSignedOut, inviteCode, s
         if (round === dismissedResult.current) return;
         setSynced(true);
         if (snap.phase === 'active' && summaryRef.current?.matchId === round) return;
-        setSnapshot(snap);
-        if (snapshotRoundId !== round) {
+        const isNewRound = snapshotRoundId !== round;
+        const nowPerf = performance.now();
+        if (isNewRound || snap.phase !== 'active' || nowPerf - lastSnapshotReactPush >= 95) {
+          lastSnapshotReactPush = nowPerf;
+          setSnapshot(snap);
+        }
+        if (isNewRound) {
           if (currentMatchRef.current !== round) {
             leavingMatch.current = undefined;
             summaryRef.current = null;

@@ -9,7 +9,16 @@ import { WebSocket, WebSocketServer } from 'ws';
 import { makeServices, type Auth, type Result } from './backend/services.ts';
 import { selectTeamClash } from './backend/teamQueue.ts';
 import type { PartyView, SocialInvite, TacticalPing } from './src/shared/social.ts';
-import { computePlayerShot, playerMotionFromSnapshot, readPlayerAim, readPlayerInput, stepPlayerMotion, type PlayerInput } from './src/shared/playerInput.ts';
+import {
+  computePlayerShot,
+  dequeuePlayerInputs,
+  enqueuePlayerInput,
+  playerMotionFromSnapshot,
+  readPlayerAim,
+  readPlayerInput,
+  stepPlayerMotion,
+  type PlayerInput,
+} from './src/shared/playerInput.ts';
 import {
   AMMO_PACKS,
   canPurchaseAmmoPack,
@@ -122,6 +131,8 @@ interface ServerCombatant extends CombatantSnapshot {
   classSkillReadyAtMs?: number;
   gadgetReadyAtMs?: number;
   input?: PlayerInput;
+  inputQueue?: PlayerInput[];
+  inputCredit?: number;
   inputAtMs?: number;
   dashPending?: boolean;
   lastReceivedInputSeq?: number;
@@ -1256,8 +1267,10 @@ function gameplay(room: ServerRoom, playerId: string, type: string, payload: Rec
       if (!input || input.seq <= (p.lastReceivedInputSeq ?? 0)) return;
       p.lastReceivedInputSeq = input.seq;
       p.input = input;
+      if (!p.inputQueue) p.inputQueue = [];
+      const droppedDash = enqueuePlayerInput(p.inputQueue, input);
       p.inputAtMs = Date.now();
-      p.dashPending ||= input.dash;
+      if (droppedDash) p.dashPending = true;
       room.antiCheat.packetsValidated++;
       room.antiCheat.lastCheckAt = p.inputAtMs;
       break;
@@ -1646,6 +1659,8 @@ function joined(room: ServerRoom, conn: Connection | undefined): void {
 
 function clearInput(p: ServerCombatant): void {
   p.input = undefined;
+  p.inputQueue = [];
+  p.inputCredit = 0;
   p.inputAtMs = undefined;
   p.dashPending = false;
   p.phaseDashPending = false;
@@ -1659,23 +1674,42 @@ function stepHuman(room: ServerRoom, p: ServerCombatant, now: number, colliders:
   if (p.overheated && p.heat <= 15) p.overheated = false;
   const member = room.members.get(p.id);
   if (!member || member.forfeited) return;
-  const command = p.input && now - (p.inputAtMs ?? 0) < 200 && member.detachedAt === undefined
-    ? { ...p.input, dash: Boolean(p.dashPending) }
-    : null;
+  if (!p.inputQueue) p.inputQueue = [];
+  const { commands, nextCredit } = dequeuePlayerInputs(
+    p.inputQueue,
+    p.inputCredit ?? 0,
+    now,
+    p.inputAtMs,
+    member.detachedAt !== undefined,
+  );
+  p.inputCredit = nextCredit;
+  if (commands.length === 0) return;
+
   const otherRobots = [...room.players.values()].filter(other => other.id !== p.id && other.alive);
-  const motion = stepPlayerMotion(playerMotionFromSnapshot(p), command, {
-    colliders, otherRobots, halfSize: MAPS[room.config.mapId].halfSize,
-    speedMult: ROBOT_CLASSES[p.robotClass].speedMult, slowed: p.slowedUntil > now,
-    phaseDash: p.phaseDashPending, lastAimYaw: p.yaw,
-  });
-  if (command) {
-    p.lastProcessedInputSeq = command.seq;
-    p.yaw = command.yaw;
-    p.pitch = command.pitch;
-    p.ads = command.ads;
+  let motion = playerMotionFromSnapshot(p);
+  const halfSize = MAPS[room.config.mapId].halfSize;
+  const speedMult = ROBOT_CLASSES[p.robotClass].speedMult;
+  const slowed = p.slowedUntil > now;
+
+  for (const rawCommand of commands) {
+    const command = rawCommand
+      ? (p.dashPending && !rawCommand.dash ? { ...rawCommand, dash: true } : rawCommand)
+      : null;
+    motion = stepPlayerMotion(motion, command, {
+      colliders, otherRobots, halfSize,
+      speedMult, slowed,
+      phaseDash: p.phaseDashPending, lastAimYaw: p.yaw,
+    });
+    if (command) {
+      p.lastProcessedInputSeq = command.seq;
+      p.yaw = command.yaw;
+      p.pitch = command.pitch;
+      p.ads = command.ads;
+      p.dashPending = false;
+    }
+    p.phaseDashPending = false;
   }
-  p.dashPending = false;
-  p.phaseDashPending = false;
+
   p.x = motion.pos.x; p.y = motion.pos.y; p.z = motion.pos.z;
   p.vx = motion.vel.x; p.vy = motion.vel.y; p.vz = motion.vel.z;
   p.grounded = motion.grounded;

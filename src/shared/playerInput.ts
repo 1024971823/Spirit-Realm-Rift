@@ -14,6 +14,9 @@ export const MOVEMENT_STEP_SEC = 0.05;
 export const DASH_DURATION_SEC = 0.24;
 export const DASH_COOLDOWN_SEC = 3.2;
 export const PHASE_DASH_DURATION_SEC = 0.35;
+export const MAX_QUEUED_INPUTS = 8;
+export const MAX_INPUT_CREDIT = 3;
+export const INPUT_IDLE_BRAKE_MS = 180;
 
 export interface PlayerAim {
   yaw: number;
@@ -91,6 +94,121 @@ export function playerMotionFromSnapshot(player: CombatantSnapshot): PlayerMotio
     grounded: player.grounded ?? Math.abs(player.vy) < 0.001,
     dashRemaining: player.dashRemaining ?? 0,
     dashCooldown: player.dashCooldown ?? 0,
+  };
+}
+
+/**
+ * Appends a validated player input to a bounded FIFO queue.
+ * Returns true if an overflowed oldest input carried a dash trigger so the caller can preserve it.
+ */
+export function enqueuePlayerInput(
+  queue: PlayerInput[],
+  input: PlayerInput,
+  maxSize = MAX_QUEUED_INPUTS,
+): boolean {
+  let droppedDash = false;
+  queue.push(input);
+  while (queue.length > maxSize) {
+    const dropped = queue.shift();
+    if (dropped?.dash) droppedDash = true;
+  }
+  return droppedDash;
+}
+
+/**
+ * Token-bucket FIFO input consumer for 20 Hz authoritative ticks.
+ * Absorbs short network jitter bursts (up to MAX_INPUT_CREDIT queued steps) without dropping
+ * inputs or allowing long-term speed hacks above 1 input per server tick.
+ */
+export function dequeuePlayerInputs(
+  queue: PlayerInput[],
+  credit: number,
+  now: number,
+  lastInputAtMs: number | undefined,
+  detached: boolean,
+  idleBrakeMs = INPUT_IDLE_BRAKE_MS,
+): { commands: Array<PlayerInput | null>; nextCredit: number } {
+  if (detached) {
+    queue.length = 0;
+    return { commands: [null], nextCredit: 0 };
+  }
+  const available = Math.min(MAX_INPUT_CREDIT, Math.max(0, credit) + 1);
+  if (queue.length > 0) {
+    const count = Math.min(queue.length, Math.floor(available));
+    const commands = queue.splice(0, count);
+    return { commands, nextCredit: available - count };
+  }
+  if (lastInputAtMs !== undefined && now - lastInputAtMs < idleBrakeMs) {
+    return { commands: [], nextCredit: available };
+  }
+  return { commands: [null], nextCredit: 0 };
+}
+
+/**
+ * Linearly interpolates between the previous and current fixed-step motion states
+ * so 20 Hz simulation steps render at constant per-frame velocity on 60–144 Hz displays.
+ */
+export function interpolatePlayerMotion(
+  prev: PlayerMotion,
+  curr: PlayerMotion,
+  alpha: number,
+): { pos: Vec3; chassisYaw: number } {
+  const t = clamp(alpha, 0, 1);
+  return {
+    pos: {
+      x: prev.pos.x + (curr.pos.x - prev.pos.x) * t,
+      y: prev.pos.y + (curr.pos.y - prev.pos.y) * t,
+      z: prev.pos.z + (curr.pos.z - prev.pos.z) * t,
+    },
+    chassisYaw: normalizeAngle(prev.chassisYaw + normalizeAngle(curr.chassisYaw - prev.chassisYaw) * t),
+  };
+}
+
+/**
+ * Shifts the interpolation segment and absorbs any server reconciliation correction into a
+ * smoothly decaying visual offset so authoritative snapshots never cause a visible pop.
+ */
+export function computeReconciliationAdjustment(
+  oldPrev: PlayerMotion | null,
+  oldCurr: PlayerMotion | null,
+  newCurr: PlayerMotion,
+  currentOffset: Vec3,
+  currentYawOffset: number,
+  snapDistanceSq = 9,
+): { prev: PlayerMotion; offset: Vec3; yawOffset: number; snapped: boolean } {
+  if (!oldPrev || !oldCurr) {
+    return { prev: newCurr, offset: { x: 0, y: 0, z: 0 }, yawOffset: 0, snapped: true };
+  }
+  const dx = newCurr.pos.x - oldCurr.pos.x;
+  const dy = newCurr.pos.y - oldCurr.pos.y;
+  const dz = newCurr.pos.z - oldCurr.pos.z;
+  const nextOffset = {
+    x: currentOffset.x - dx,
+    y: currentOffset.y - dy,
+    z: currentOffset.z - dz,
+  };
+  const dyaw = normalizeAngle(newCurr.chassisYaw - oldCurr.chassisYaw);
+  const nextYawOffset = normalizeAngle(currentYawOffset - dyaw);
+
+  const deltaSq = dx * dx + dy * dy + dz * dz;
+  const offsetSq = nextOffset.x * nextOffset.x + nextOffset.y * nextOffset.y + nextOffset.z * nextOffset.z;
+  if (deltaSq > snapDistanceSq || offsetSq > snapDistanceSq) {
+    return { prev: newCurr, offset: { x: 0, y: 0, z: 0 }, yawOffset: 0, snapped: true };
+  }
+
+  return {
+    prev: {
+      ...oldPrev,
+      pos: {
+        x: oldPrev.pos.x + dx,
+        y: oldPrev.pos.y + dy,
+        z: oldPrev.pos.z + dz,
+      },
+      chassisYaw: normalizeAngle(oldPrev.chassisYaw + dyaw),
+    },
+    offset: nextOffset,
+    yawOffset: nextYawOffset,
+    snapped: false,
   };
 }
 

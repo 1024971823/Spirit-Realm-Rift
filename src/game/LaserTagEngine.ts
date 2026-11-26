@@ -23,6 +23,8 @@ import {
 } from '../shared/physics';
 import {
   computePlayerCamera,
+  computeReconciliationAdjustment,
+  interpolatePlayerMotion,
   MOVEMENT_STEP_SEC,
   playerMotionFromSnapshot,
   stepPlayerMotion,
@@ -62,6 +64,24 @@ import {
 import { preloadAllRoboMasterTemplates } from './robomasterModel';
 import { createArenaTextures, type ProceduralTextureSet } from './textures';
 import { TACTICAL_KEYS, TACTICAL_PINGS, tacticalDirection } from './tacticalPings';
+import {
+  FramePerfMonitor,
+  type FramePerfReport,
+  type MicroStutterEvent,
+} from './framePerfMonitor';
+
+export interface LaserTagPerfHandle {
+  getReport: () => FramePerfReport;
+  getRecentStutters: () => MicroStutterEvent[];
+  reset: () => void;
+  setLogging: (enabled: boolean) => void;
+}
+
+declare global {
+  interface Window {
+    __laserTagPerf?: LaserTagPerfHandle;
+  }
+}
 
 const _vec3A = new THREE.Vector3();
 const _vec3B = new THREE.Vector3();
@@ -221,7 +241,10 @@ export class LaserTagEngine {
   private controller: ControllerConfig;
 
   private playerPos = new THREE.Vector3(-42, 0, 0);
+  private prevPredictedMotion: PlayerMotion | null = null;
   private predictedMotion: PlayerMotion | null = null;
+  private reconcileOffset = new THREE.Vector3();
+  private reconcileYawOffset = 0;
   private pendingInputs: PlayerInput[] = [];
   private nextInputSeq = 1;
   private nextActionSeq = 1;
@@ -293,6 +316,10 @@ export class LaserTagEngine {
   private envRenderTarget: THREE.WebGLRenderTarget | null = null;
   private contextLost = false;
   private disposed = false;
+  private perfMonitor: FramePerfMonitor;
+  private perfHandle: LaserTagPerfHandle;
+  private lastRecordedDecodeTs = -1;
+  private lastSnapshotApplyAtMs: number | null = null;
 
   constructor(
     container: HTMLElement,
@@ -413,8 +440,34 @@ export class LaserTagEngine {
       this.renderer.compile(this.scene, this.camera);
     }
 
+    this.perfMonitor = new FramePerfMonitor({ isSoftwareGl: this.isSoftwareGl });
+    this.perfHandle = {
+      getReport: () => this.perfMonitor.getReport(),
+      getRecentStutters: () => this.perfMonitor.getRecentStutters(),
+      reset: () => this.resetPerfMonitor(),
+      setLogging: (enabled: boolean) => this.perfMonitor.setLoggingEnabled(enabled),
+    };
+    window.__laserTagPerf = this.perfHandle;
+
     this.bindEvents();
     this.frameId = requestAnimationFrame(this.tick);
+  }
+
+  getPerfReport(): FramePerfReport {
+    return this.perfMonitor.getReport();
+  }
+
+  getRecentStutters(): MicroStutterEvent[] {
+    return this.perfMonitor.getRecentStutters();
+  }
+
+  resetPerfMonitor(): void {
+    this.lastSnapshotApplyAtMs = null;
+    this.perfMonitor.reset();
+  }
+
+  setPerfLogging(enabled: boolean): void {
+    this.perfMonitor.setLoggingEnabled(enabled);
   }
 
   setPhase(phase: GamePhase): void {
@@ -457,12 +510,17 @@ export class LaserTagEngine {
     this.prevHpTotal = 150;
     this.prevLocalAlive = true;
     this.pendingInputs = [];
+    this.prevPredictedMotion = null;
+    this.predictedMotion = null;
+    this.reconcileOffset.set(0, 0, 0);
+    this.reconcileYawOffset = 0;
     this.nextActionSeq = 1;
     this.activeMatchId = snap.matchId;
     this.latestServerTick = -1;
     this.nextInputSeq = (snap.players.find((p) => p.id === this.localPlayerId)?.lastProcessedInputSeq ?? 0) + 1;
     this.inputClock = 0;
     this.wantsDash = false;
+    this.resetPerfMonitor();
     this.applySnapshot(snap);
     this.syncSpawnFromSnapshot();
   }
@@ -577,8 +635,8 @@ export class LaserTagEngine {
     return (this.phase === 'title' ? undefined : me?.robotClass) ?? this.loadout.robotClass;
   }
 
-  private ensureLocalRobotRig(): void {
-    if (!this.textures) return;
+  private ensureLocalRobotRig(): boolean {
+    if (!this.textures) return false;
     const me = this.latestSnapshot?.players.find((p) => p.id === this.localPlayerId);
     const team: TeamId = me?.team ?? 'cobalt';
     const robotClass: RobotClass = this.getEffectiveLocalRobotClass(me);
@@ -621,9 +679,13 @@ export class LaserTagEngine {
       this.localRobotRig.root.visible = this.phase !== 'title' && alive;
       this.localRobotRig.shieldDome.visible = Boolean(me?.shieldActive);
     }
+    return changed;
   }
 
   applySnapshot(snap: MatchSnapshot): void {
+    const snapStartMs = performance.now();
+    let rebuiltArena = false;
+    let rebuiltRigCount = 0;
     if (snap.matchId !== this.activeMatchId) {
       this.closeTacticalMenu();
       this.clearTacticalPings();
@@ -632,11 +694,15 @@ export class LaserTagEngine {
       this.pendingInputs = [];
       this.nextInputSeq = 1;
       this.nextActionSeq = 1;
+      this.lastSnapshotApplyAtMs = null;
     }
     if (snap.matchId && snap.serverTick !== undefined) {
       if (snap.serverTick < this.latestServerTick) return;
       this.latestServerTick = snap.serverTick;
     }
+    const interSnapshotDeltaMs =
+      this.lastSnapshotApplyAtMs !== null ? Math.max(0, snapStartMs - this.lastSnapshotApplyAtMs) : null;
+    this.lastSnapshotApplyAtMs = snapStartMs;
     const previousTeam = this.latestSnapshot?.players.find((p) => p.id === this.localPlayerId)?.team;
     const local = snap.players.find((p) => p.id === this.localPlayerId);
     this.latestSnapshot = snap;
@@ -644,6 +710,7 @@ export class LaserTagEngine {
     if (!local || local.team !== previousTeam || snap.phase !== 'active') this.clearTacticalPings();
     if (snap.mapId !== this.currentMapId) {
       this.buildArena(snap.mapId);
+      rebuiltArena = true;
     }
 
     // 1. Update destructible barriers visibility & damage tint
@@ -729,7 +796,31 @@ export class LaserTagEngine {
         let predicted = playerMotionFromSnapshot(p);
         const context = this.getMovementContext(p, snap);
         for (const input of this.pendingInputs) predicted = stepPlayerMotion(predicted, input, context);
-        this.predictedMotion = predicted;
+
+        if (respawned || !p.alive || this.phase !== 'playing') {
+          this.prevPredictedMotion = predicted;
+          this.predictedMotion = predicted;
+          this.reconcileOffset.set(0, 0, 0);
+          this.reconcileYawOffset = 0;
+          this.playerPos.set(p.x, p.y, p.z);
+          this.localChassisYaw = predicted.chassisYaw;
+        } else {
+          const adj = computeReconciliationAdjustment(
+            this.prevPredictedMotion,
+            this.predictedMotion,
+            predicted,
+            this.reconcileOffset,
+            this.reconcileYawOffset,
+          );
+          this.prevPredictedMotion = adj.prev;
+          this.predictedMotion = predicted;
+          this.reconcileOffset.set(adj.offset.x, adj.offset.y, adj.offset.z);
+          this.reconcileYawOffset = adj.yawOffset;
+          if (adj.snapped) {
+            this.playerPos.set(predicted.pos.x, predicted.pos.y, predicted.pos.z);
+            this.localChassisYaw = predicted.chassisYaw;
+          }
+        }
         this.dashTimer = predicted.dashRemaining;
         this.dashCooldown = predicted.dashCooldown;
         this.heat = p.heat ?? this.heat;
@@ -737,10 +828,6 @@ export class LaserTagEngine {
         this.gadgetCooldown = p.gadgetCooldown ?? this.gadgetCooldown;
         this.classSkillCooldown = p.classSkillCooldown ?? this.classSkillCooldown;
 
-        if (respawned || !p.alive || this.phase !== 'playing') {
-          this.playerPos.set(p.x, p.y, p.z);
-          this.localChassisYaw = predicted.chassisYaw;
-        }
         if (respawned) {
           this.yaw = this.targetYaw = p.yaw;
           this.pitch = this.targetPitch = p.pitch;
@@ -801,6 +888,7 @@ export class LaserTagEngine {
           lastSnapshotMs: nowPerf,
         };
         this.remoteActors.set(p.id, actor);
+        rebuiltRigCount++;
       }
 
       const prevAlive = actor.rig.root.visible;
@@ -841,7 +929,25 @@ export class LaserTagEngine {
       }
     }
 
-    this.ensureLocalRobotRig();
+    if (this.ensureLocalRobotRig()) rebuiltRigCount++;
+    const snapEndMs = performance.now();
+    const decodeMeta = this.network.getLastSnapshotDecodeMeta();
+    const freshDecode =
+      decodeMeta && decodeMeta.timestampMs !== this.lastRecordedDecodeTs && snapEndMs - decodeMeta.timestampMs <= 100;
+    if (freshDecode && decodeMeta) {
+      this.lastRecordedDecodeTs = decodeMeta.timestampMs;
+    }
+    this.perfMonitor.recordSnapshot({
+      timestampMs: snapEndMs,
+      applyMs: Math.max(0, snapEndMs - snapStartMs),
+      decodeMs: freshDecode && decodeMeta ? decodeMeta.decodeMs : 0,
+      interSnapshotDeltaMs,
+      bytes: freshDecode && decodeMeta ? decodeMeta.bytes : 0,
+      serverTick: snap.serverTick ?? -1,
+      playerCount: snap.players.length,
+      rebuiltArena,
+      rebuiltRigCount,
+    });
   }
 
   showTacticalPing(ping: TacticalPing): void {
@@ -1025,6 +1131,7 @@ export class LaserTagEngine {
       this.localChassisYaw = me.chassisYaw ?? me.yaw;
       this.pitch = this.targetPitch = me.pitch;
       this.predictedMotion = playerMotionFromSnapshot(me);
+      this.prevPredictedMotion = this.predictedMotion;
     } else {
       const sp = MAPS[this.currentMapId].spawns[0];
       this.playerPos.set(sp.x, sp.y, sp.z);
@@ -1034,7 +1141,10 @@ export class LaserTagEngine {
       this.pitch = -0.04;
       this.targetPitch = -0.04;
       this.predictedMotion = null;
+      this.prevPredictedMotion = null;
     }
+    this.reconcileOffset.set(0, 0, 0);
+    this.reconcileYawOffset = 0;
     this.pendingLookDx = 0;
     this.pendingLookDy = 0;
     this.ensureLocalRobotRig();
@@ -1069,6 +1179,7 @@ export class LaserTagEngine {
     if (this.pendingInputs.length >= 16 || !this.network.send('player:input', input)) return;
     this.nextInputSeq++;
     this.wantsDash = false;
+    this.prevPredictedMotion = this.predictedMotion;
     this.predictedMotion = stepPlayerMotion(this.predictedMotion, input, this.getMovementContext(me, snapshot));
     this.pendingInputs.push(input);
     this.dashTimer = this.predictedMotion.dashRemaining;
@@ -1656,21 +1767,39 @@ export class LaserTagEngine {
 
     const map = MAPS[this.currentMapId];
     this.inputClock += dt;
-    if (this.inputClock >= MOVEMENT_STEP_SEC) {
+    let stepped = 0;
+    while (this.inputClock >= MOVEMENT_STEP_SEC && stepped < 2) {
       this.inputClock -= MOVEMENT_STEP_SEC;
       this.sendMovementInput(wishX, wishZ);
+      stepped++;
+    }
+    if (this.inputClock >= MOVEMENT_STEP_SEC) {
+      this.inputClock = this.inputClock % MOVEMENT_STEP_SEC;
     }
 
     const oldX = this.playerPos.x;
     const oldZ = this.playerPos.z;
     if (this.predictedMotion) {
-      const { pos, chassisYaw } = this.predictedMotion;
-      _vec3A.set(pos.x, pos.y, pos.z);
-      // A spawn/large correction snaps immediately; small corrections are blended across render frames.
-      if (this.playerPos.distanceToSquared(_vec3A) > 9) this.playerPos.copy(_vec3A);
-      else this.playerPos.lerp(_vec3A, 1 - Math.exp(-32 * dt));
-      this.localChassisYaw = normalizeAngle(this.localChassisYaw +
-        normalizeAngle(chassisYaw - this.localChassisYaw) * (1 - Math.exp(-28 * dt)));
+      const prev = this.prevPredictedMotion ?? this.predictedMotion;
+      const alpha = THREE.MathUtils.clamp(this.inputClock / MOVEMENT_STEP_SEC, 0, 1);
+      const interp = interpolatePlayerMotion(prev, this.predictedMotion, alpha);
+      const decay = Math.exp(-14 * dt);
+      if (this.reconcileOffset.lengthSq() > 1e-7) {
+        this.reconcileOffset.multiplyScalar(decay);
+      } else {
+        this.reconcileOffset.set(0, 0, 0);
+      }
+      if (Math.abs(this.reconcileYawOffset) > 1e-4) {
+        this.reconcileYawOffset *= decay;
+      } else {
+        this.reconcileYawOffset = 0;
+      }
+      this.playerPos.set(
+        interp.pos.x + this.reconcileOffset.x,
+        interp.pos.y + this.reconcileOffset.y,
+        interp.pos.z + this.reconcileOffset.z,
+      );
+      this.localChassisYaw = normalizeAngle(interp.chassisYaw + this.reconcileYawOffset);
     }
     const movedHoriz = Math.hypot(this.playerPos.x - oldX, this.playerPos.z - oldZ);
     const now = performance.now();
@@ -1784,9 +1913,14 @@ export class LaserTagEngine {
 
     try {
       const now = performance.now();
-      const rawDt = (now - this.lastFrameTime) / 1000;
+      const rawDeltaMs = now - this.lastFrameTime;
+      const rawDt = rawDeltaMs / 1000;
       this.lastFrameTime = now;
       const dt = Number.isFinite(rawDt) ? Math.min(Math.max(rawDt, 0.001), 0.05) : 0.016;
+      let gameplayMs = 0;
+      let shaderCompileMs = 0;
+      let renderMs = 0;
+      let hudMs = 0;
 
       if (!Number.isFinite(this.playerPos.x) || !Number.isFinite(this.playerPos.y) || !Number.isFinite(this.playerPos.z)) {
         this.syncSpawnFromSnapshot();
@@ -1821,7 +1955,9 @@ export class LaserTagEngine {
       if (this.hitstopTimer > 0) {
         this.hitstopTimer = Math.max(0, this.hitstopTimer - dt);
       } else if (this.phase === 'playing') {
+        const gpStart = performance.now();
         this.stepGameplay(dt);
+        gameplayMs = performance.now() - gpStart;
       }
 
       if (this.phase === 'playing') {
@@ -1971,17 +2107,32 @@ export class LaserTagEngine {
         if (this.needsShaderCompile && !this.isSoftwareGl && now - this.lastShaderCompileMs > 250) {
           this.needsShaderCompile = false;
           this.lastShaderCompileMs = now;
+          const compileStart = performance.now();
           this.renderer.compile(this.scene, this.camera);
+          shaderCompileMs = performance.now() - compileStart;
         }
 
+        const renderStart = performance.now();
         this.renderer.render(this.scene, this.camera);
+        renderMs = performance.now() - renderStart;
       }
 
       // Throttled HUD state emission (<= 10Hz)
       if (now - this.lastHudPush >= 95) {
         this.lastHudPush = now;
+        const hudStart = performance.now();
         this.emitHudState();
+        hudMs = performance.now() - hudStart;
       }
+
+      const tickEnd = performance.now();
+      this.perfMonitor.recordFrame(tickEnd, rawDeltaMs, {
+        gameplayMs,
+        renderMs,
+        hudMs,
+        shaderCompileMs,
+        totalWorkMs: Math.max(0, tickEnd - now),
+      });
     } catch (err) {
       console.error('Engine tick error:', err);
     } finally {
@@ -2351,6 +2502,9 @@ export class LaserTagEngine {
 
   dispose(): void {
     this.disposed = true;
+    if (window.__laserTagPerf === this.perfHandle) {
+      delete window.__laserTagPerf;
+    }
     this.tacticalMenu = null;
     this.clearTacticalPings();
     cancelAnimationFrame(this.frameId);

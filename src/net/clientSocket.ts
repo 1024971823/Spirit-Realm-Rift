@@ -144,6 +144,11 @@ export class GameNetworkClient {
   private retryCount = 0;
   private snapshotRehydrator = new SnapshotRehydrator();
   private handshakeQueue: Array<{ type: string; payload: object }> = [];
+  private lastSnapshotDecodeMeta: { decodeMs: number; bytes: number; timestampMs: number } | null = null;
+
+  getLastSnapshotDecodeMeta(): { decodeMs: number; bytes: number; timestampMs: number } | null {
+    return this.lastSnapshotDecodeMeta;
+  }
 
   setListeners(listeners: ClientSocketListeners): void {
     this.listeners = listeners;
@@ -188,6 +193,8 @@ export class GameNetworkClient {
 
     ws.onmessage = (ev) => {
       if (ws !== this.ws) return;
+      const parseStart = performance.now();
+      const rawBytes = typeof ev.data === 'string' ? ev.data.length : 0;
       let msg: { type: string; payload?: ServerPayload };
       try { msg = JSON.parse(ev.data); } catch { return; }
       if (!msg || typeof msg.type !== 'string') return;
@@ -233,20 +240,31 @@ export class GameNetworkClient {
               this.listeners.onError?.({ action: msg.type, code: 'protocol_mismatch' });
               break;
             }
-            this.listeners.onSnapshot?.(
-              this.snapshotRehydrator.hydrate(snapObj as unknown as MatchSnapshot | CompactMatchSnapshot),
-            );
+            const hydrated = this.snapshotRehydrator.hydrate(snapObj as unknown as MatchSnapshot | CompactMatchSnapshot);
+            const doneAt = performance.now();
+            this.lastSnapshotDecodeMeta = {
+              decodeMs: Math.max(0, doneAt - parseStart),
+              bytes: rawBytes,
+              timestampMs: doneAt,
+            };
+            this.listeners.onSnapshot?.(hydrated);
           }
           break;
-        case 'match:state':
+        case 'match:state': {
           if ('compact' in payload && payload.compact !== 1) {
             this.listeners.onError?.({ action: 'match:state', code: 'protocol_mismatch' });
             break;
           }
-          this.listeners.onSnapshot?.(
-            this.snapshotRehydrator.hydrate(payload as unknown as MatchSnapshot | CompactMatchSnapshot),
-          );
+          const hydrated = this.snapshotRehydrator.hydrate(payload as unknown as MatchSnapshot | CompactMatchSnapshot);
+          const doneAt = performance.now();
+          this.lastSnapshotDecodeMeta = {
+            decodeMs: Math.max(0, doneAt - parseStart),
+            bytes: rawBytes,
+            timestampMs: doneAt,
+          };
+          this.listeners.onSnapshot?.(hydrated);
           break;
+        }
         case 'match:beam':
           this.listeners.onBeam?.(payload as unknown as BeamVisualEvent);
           break;
